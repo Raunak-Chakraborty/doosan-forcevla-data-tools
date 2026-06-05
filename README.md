@@ -47,7 +47,28 @@ This repository currently provides:
 - pure-Python measured TCP delta action computation
 - a tiny dummy raw episode generator
 - a raw episode validator CLI
+- a simple raw-to-processed JSONL converter
+- a processed episode validator CLI
 - standard-library `unittest` tests
+
+## Current Pipeline Status
+
+The current v0 pipeline is:
+
+```text
+raw dummy episode -> validate raw -> convert to processed -> validate processed
+```
+
+Example commands:
+
+```bash
+PYTHONPATH=src python3 -m doosan_forcevla_data.dummy.make_dummy_raw_episode --output data/raw_dummy/episode_000000
+PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_raw_episode data/raw_dummy/episode_000000
+PYTHONPATH=src python3 -m doosan_forcevla_data.convert.raw_to_processed --raw data/raw_dummy/episode_000000 --output data/processed_dummy/episode_000000
+PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_processed_episode data/processed_dummy/episode_000000
+```
+
+The processed output is still a small human-readable JSONL manifest with image path references. It is not yet LeRobot parquet export and it is not yet ForceVLA training-ready. The next future step after this conversion layer is LeRobot export planning.
 
 ## Limitations
 
@@ -57,6 +78,7 @@ This repository currently provides:
 - No LeRobot, parquet, Hugging Face, or ForceVLA training export is implemented yet.
 - Dummy image files are tiny PPM placeholders, not real camera captures.
 - The v0 raw validator checks structure and basic numeric validity only; it does not validate calibration, time synchronization quality, or task semantics.
+- The v0 processed output uses JSONL records for inspection and testing; it is not a final training storage format.
 
 ## Example Commands
 
@@ -66,4 +88,6 @@ If the package is not installed, run with `PYTHONPATH=src`:
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 PYTHONPATH=src python3 -m doosan_forcevla_data.dummy.make_dummy_raw_episode --output data/raw_dummy/episode_000000
 PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_raw_episode data/raw_dummy/episode_000000
+PYTHONPATH=src python3 -m doosan_forcevla_data.convert.raw_to_processed --raw data/raw_dummy/episode_000000 --output data/processed_dummy/episode_000000
+PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_processed_episode data/processed_dummy/episode_000000
 ```

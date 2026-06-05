@@ -1,5 +1,5 @@
-Doosan ForceVLA Data Tools v0 Foundation Report
-================================================
+Doosan ForceVLA Data Tools v0 Raw-to-Processed Conversion Report
+=================================================================
 
 Repository
 ----------
@@ -7,199 +7,161 @@ Path: /home/horus/robotics_thesis/doosan_forcevla_data_tools
 Project type: laptop-only Python repository
 Robot/task context: Doosan M1013 peg-in-hole robotics thesis
 Dataset target direction: ForceVLA/tshiamor-style and future LeRobot-style imitation-learning datasets
-Implementation date: Fri Jun 05 2026
+Previous committed baseline: v0 dataset foundation
+Previous commit message: Add v0 dataset foundation
+Current task: implement v0 raw-to-processed conversion
 
 Executive summary
 -----------------
-Implemented the first clean v0 dataset foundation for the repository. The code establishes a small, standard-library-only base for raw episode metadata, processed dataset constants, measured TCP delta action computation, dummy raw data generation, raw episode validation, and unit tests.
+Implemented the v0 raw-to-processed conversion layer. The repository can now generate a tiny dummy raw episode, validate the raw episode, convert it into a fixed-shape processed JSONL episode, and validate the processed episode end-to-end using only the Python standard library.
 
-The most important design decision is that the primary learning action label is measured TCP delta computed from robot state:
+The processed output remains deliberately simple and human-readable:
+
+1. metadata_processed.json
+2. frames.jsonl
+
+This is not yet LeRobot parquet export and not yet ForceVLA training-ready. It is a stable intermediate representation for checking schema, action labels, image references, and future export logic.
+
+Most important design point
+---------------------------
+The primary learning action label remains measured TCP delta computed from robot state:
 
 action[t] = TCP pose delta from t to t + 1
 
-This makes the v0 dataset independent of the demonstration collection method. Hand-guided demonstrations can still produce a valid action label because measured robot state exists even when no commanded action exists. Teleoperation and future policy/shadow-mode logs can still preserve optional action streams, but those streams are not required by the initial learning pipeline.
+The converter does not read commanded_twist.csv, commanded_action, predicted_action, or selected_action to create the learning action. Those streams may exist later as optional auxiliary data, but the processed v0 dataset does not depend on them.
 
-Key constraints followed
-------------------------
-1. No ROS dependency was added.
-2. No dependency on the lab MyROS2 workspace was added.
-3. No packages were installed.
-4. No external downloads were performed.
-5. No heavy Python dependencies were introduced.
-6. No files outside this repository were modified.
-7. No large data was created.
-8. Dummy data is ignored by git through .gitignore.
-9. Tests use standard-library unittest, not pytest.
-10. The implementation uses a src/ Python package layout.
+This keeps the dataset compatible with:
 
-Design rationale
-----------------
-The repository needs to support multiple possible demonstration sources: hand-guiding, keyboard or joystick teleoperation, SpaceMouse, VR controllers, and future shadow-mode policy logging. A dataset design that treats commanded actions as mandatory would exclude hand-guided demonstrations and would tie the dataset to one collection mechanism.
+1. hand-guided demonstrations with no commanded action stream
+2. keyboard or joystick teleoperation logs
+3. SpaceMouse teleoperation logs
+4. VR controller logs
+5. future policy shadow-mode logs
 
-The v0 design therefore separates action streams into two categories:
-
-1. Primary action label
-   measured_tcp_delta, computed from measured robot TCP pose at consecutive frames.
-
-2. Optional action-like streams
-   commanded_action or commanded_twist from teleoperation, predicted_action from a shadow policy, and selected_action from a controller that chooses among streams.
-
-The optional streams may be valuable later for debugging, analysis, behavior cloning variants, policy comparison, or studying operator intent. They are intentionally not required for the first processed dataset contract.
-
-Dataset layer model
--------------------
-Layer A is the raw dataset. It stores what happened during collection with minimal assumptions: metadata, robot TCP pose, joint states, wrench readings, camera frames, events, and any optional action streams that were available. The raw layer should preserve evidence and collection context.
-
-Layer B is the processed dataset. It converts raw episodes into fixed per-frame arrays and labels for imitation learning. The v0 processed concept includes camera streams, robot state, wrench, joint state, a 25-dimensional model_state vector, and a 7-dimensional measured_action vector.
-
-This separation is important because raw collection formats often change as hardware and teleoperation methods evolve. The processed format should remain stable enough for training experiments.
-
-Dataset contract details
-------------------------
-The human-readable v0 contract is in:
-
-configs/doosan_v0.yaml
-
-Important values in that contract:
-
-dataset_name: doosan_peg_in_hole_v0
-robot_type: doosan_m1013
-fps: 30
-quaternion convention: xyzw
-
-Camera streams:
-1. external_rgb
-   Fixed external RGB camera stream. Required in v0 dummy/raw validation.
-
-2. tcp_rgb
-   TCP or wrist-mounted RGB camera stream. Required in v0 dummy/raw validation.
-
-3. aux_rgb
-   Optional placeholder for a future auxiliary RGB stream. Not required by the current dummy generator or validator.
-
-State fields:
-1. ee_pos, shape 3, TCP position in base frame, order x y z.
-2. ee_quat, shape 4, TCP orientation quaternion, convention xyzw, order qx qy qz qw.
-3. gripper_pos, shape 1, placeholder for current or future gripper state.
-4. wrench, shape 6, order Fx Fy Fz Tx Ty Tz.
-5. joint_pos, shape 6.
-6. joint_vel, shape 6.
-
-model_state layout:
-1. ee_pos, 3 values.
-2. ee_axis_angle, 3 values.
-3. gripper_pos, 1 value.
-4. wrench, 6 values.
-5. joint_pos, 6 values.
-6. joint_vel, 6 values.
-
-Total model_state dimension: 25.
-
-action layout:
-1. dx
-2. dy
-3. dz
-4. dRx
-5. dRy
-6. dRz
-7. gripper_delta_or_zero
-
-Total action dimension: 7.
-
-Supported action sources in the contract:
-1. measured_tcp_delta
-2. commanded_twist_optional
-3. predicted_action_optional
-
-Task metadata fields in the contract:
-1. task_instruction
-2. geometry_type
-3. orientation_type
-4. collection_method
-5. success
-6. failure_reason
+Constraints followed
+--------------------
+1. No ROS recorder was implemented.
+2. No LeRobot parquet export was implemented.
+3. No Hugging Face integration was added.
+4. No any4lerobot cloning or integration was performed.
+5. No packages were installed.
+6. No heavy dependencies were added.
+7. Only the Python standard library is used.
+8. No files outside this repository were modified.
+9. Output data remains small and human-readable.
+10. No commit was made automatically.
 
 Files created or modified
 -------------------------
-1. README.md
-   Documents the repository purpose and explains the raw versus processed dataset layers. It states that measured TCP delta is the primary action label and that commanded action streams are optional. It also records current limitations, including the lack of ROS, LeRobot export, Hugging Face integration, and ForceVLA training code.
+1. src/doosan_forcevla_data/convert/raw_to_processed.py
+   Added the v0 raw-to-processed converter and CLI.
 
-2. pyproject.toml
-   Adds minimal Python project metadata using package name doosan-forcevla-data-tools. It uses the src/ layout, requires Python >=3.10, and declares no runtime dependencies. The build backend is setuptools through the standard pyproject configuration.
+2. src/doosan_forcevla_data/validate/validate_processed_episode.py
+   Added processed episode validator and CLI.
 
-3. configs/doosan_v0.yaml
-   Adds the human-readable v0 dataset contract. It defines the dataset name, robot type, fps, camera streams, state fields, model_state layout, action layout, supported action sources, and required task metadata fields.
+3. tests/test_raw_to_processed.py
+   Added unittest coverage for dummy raw generation, conversion, processed validation, frame dimensions, finite numeric values, terminal padding, nonzero translation action, and nonzero rotation action.
 
-4. src/doosan_forcevla_data/schema/raw_schema.py
-   Adds small dataclasses and constants for raw episode metadata. It uses only dataclasses and typing from the standard library. It defines REQUIRED_METADATA_KEYS, RawEpisodeMetadata, RawEpisodePaths, and RAW_EPISODE_PATHS.
+4. src/doosan_forcevla_data/validate/validate_raw_episode.py
+   Updated the raw validator so commanded_twist.csv is optional. If the file exists, it is still validated. This prevents the processed pipeline from indirectly requiring a teleoperation command stream.
 
-5. src/doosan_forcevla_data/schema/processed_schema.py
-   Adds constants and field ordering lists for the processed v0 dataset. It defines MODEL_STATE_DIM = 25, ACTION_DIM = 7, JOINT_COUNT = 6, WRENCH_DIM = 6, QUATERNION_CONVENTION = xyzw, and exact field order lists for ee_pos, ee_quat, ee_axis_angle, gripper_pos, wrench, joint_pos, joint_vel, model_state, action, and state.
+5. README.md
+   Added a Current Pipeline Status section showing raw dummy episode generation, raw validation, conversion to processed JSONL, and processed validation. Also clarified that processed output is not yet LeRobot parquet and not yet ForceVLA training-ready.
 
-6. src/doosan_forcevla_data/convert/compute_actions.py
-   Adds pure-Python quaternion and measured TCP delta action functions. The code validates input lengths, rejects NaNs and infinities, normalizes quaternions internally, and returns a plain list of 7 floats.
+6. docs/lerobot_export_plan.md
+   Added short planning notes for future LeRobot export. It mentions that any4lerobot may be useful later as a reference, but should not be integrated yet.
 
-7. src/doosan_forcevla_data/dummy/make_dummy_raw_episode.py
-   Adds a tiny deterministic dummy raw episode generator. It creates 20 frames by default and writes metadata, robot CSVs, force CSV, optional commanded_twist CSV, events, and small PPM placeholder images using only the standard library.
+7. opencode_report.txt
+   Updated this detailed report.
 
-8. src/doosan_forcevla_data/validate/validate_raw_episode.py
-   Adds a validator function and CLI for v0 raw episodes. It checks required files, metadata keys, CSV headers, non-empty CSV rows, strictly increasing timestamps, numeric finite values, TCP pose fields, joint state fields, wrench fields, commanded twist fields, events, and image directories.
+New converter details
+---------------------
+Module:
 
-9. tests/test_compute_actions.py
-   Adds standard-library unittest coverage for measured TCP delta action computation.
+src/doosan_forcevla_data/convert/raw_to_processed.py
 
-10. tests/test_dummy_raw_episode.py
-    Adds standard-library unittest coverage for dummy raw episode generation and validation in a temporary directory.
+Primary function:
 
-11. .gitignore
-    Ignores Python caches, virtualenv/env files, dummy data outputs, egg-info directories, and pytest cache.
+convert_raw_to_processed(raw_episode_dir, output_dir) -> Path
 
-12. opencode_report.txt
-    This detailed implementation report.
+CLI:
 
-Raw metadata schema details
----------------------------
-The raw metadata dataclass is RawEpisodeMetadata. Fields are:
+PYTHONPATH=src python3 -m doosan_forcevla_data.convert.raw_to_processed --raw data/raw_dummy/episode_000000 --output data/processed_dummy/episode_000000
 
-1. episode_id: str
-2. task_instruction: str
-3. geometry_type: str
-4. orientation_type: str
-5. collection_method: str
-6. action_label_primary: str, default measured_tcp_delta
-7. success: bool
-8. failure_reason: str or None
-9. fps: int
-10. optional_action_streams: list[str]
+Converter behavior:
+1. Calls validate_raw_episode(raw_episode_dir) before conversion.
+2. Raises ValueError from the function if raw validation fails.
+3. CLI prints clear validation/conversion errors and exits nonzero on failure.
+4. Reads metadata.json.
+5. Reads robot/tcp_pose.csv.
+6. Reads robot/joint_states.csv.
+7. Reads force/wrench.csv.
+8. Does not read commanded_twist.csv for the learning action label.
+9. Aligns rows by frame index for v0.
+10. Does not implement advanced timestamp synchronization yet.
+11. Converts TCP quaternion xyzw to ee_axis_angle using the existing pure-Python quaternion-to-rotation-vector function.
+12. Builds model_state in the v0 processed schema order.
+13. Computes measured_action using compute_measured_tcp_delta_action.
+14. Writes terminal padding action [0, 0, 0, 0, 0, 0, 0] for the final frame.
+15. Writes action_is_terminal_padding=false for non-final frames.
+16. Writes action_is_terminal_padding=true for the final frame.
+17. Preserves image references as absolute paths to raw episode PPM image files.
+18. Does not copy images.
+19. Writes metadata_processed.json.
+20. Writes frames.jsonl.
 
-The required metadata keys are:
+Processed metadata fields
+-------------------------
+metadata_processed.json includes:
 
-1. episode_id
-2. task_instruction
-3. geometry_type
-4. orientation_type
-5. collection_method
-6. action_label_primary
-7. success
-8. failure_reason
-9. fps
+1. source_raw_episode
+2. dataset_name
+3. robot_type
+4. fps
+5. quaternion_convention
+6. model_state_dim
+7. action_dim
+8. action_label_primary
+9. frame_count
+10. task_instruction
+11. geometry_type
+12. orientation_type
+13. collection_method
+14. success
+15. failure_reason
+16. notes
 
-The raw path dataclass is RawEpisodePaths. Expected relative paths are:
+Observed generated metadata from the manual run:
 
-1. metadata.json
-2. robot/tcp_pose.csv
-3. robot/joint_states.csv
-4. force/wrench.csv
-5. actions/commanded_twist.csv
-6. events.csv
-7. images/external_rgb
-8. images/tcp_rgb
+source_raw_episode: /home/horus/robotics_thesis/doosan_forcevla_data_tools/data/raw_dummy/episode_000000
+dataset_name: doosan_peg_in_hole_v0
+robot_type: doosan_m1013
+fps: 30
+quaternion_convention: xyzw
+model_state_dim: 25
+action_dim: 7
+action_label_primary: measured_tcp_delta
+frame_count: 20
+collection_method: dummy
+success: true
+notes: Simple v0 JSONL processed manifest; not yet LeRobot parquet export and not yet ForceVLA training-ready.
 
-Processed schema details
-------------------------
-Processed constants are intentionally simple module-level constants so future converters and validators can import a single source of truth. The important lists are:
+Processed frame schema
+----------------------
+Each line in frames.jsonl is one JSON object with:
 
-MODEL_STATE_FIELDS:
+1. frame_index
+2. timestamp
+3. external_rgb_path
+4. tcp_rgb_path
+5. model_state
+6. measured_action
+7. action_is_terminal_padding
+
+model_state layout
+------------------
+The converter builds model_state exactly in the order from processed_schema.MODEL_STATE_FIELDS:
+
 1. ee_pos_x
 2. ee_pos_y
 3. ee_pos_z
@@ -226,7 +188,12 @@ MODEL_STATE_FIELDS:
 24. joint_vel_4
 25. joint_vel_5
 
-ACTION_FIELDS:
+model_state length is checked to be exactly 25.
+
+measured_action layout
+----------------------
+The converter builds measured_action in this order:
+
 1. dx
 2. dy
 3. dz
@@ -235,215 +202,119 @@ ACTION_FIELDS:
 6. dRz
 7. gripper_delta_or_zero
 
-The module includes assertions that the model_state and action field lists match the declared dimensions.
+For frames 0 through N - 2:
 
-Measured action implementation details
---------------------------------------
-The measured action code is in:
+measured_action[t] = TCP delta from frame t to frame t + 1
 
-src/doosan_forcevla_data/convert/compute_actions.py
+For the final frame:
 
-Public functions:
-1. normalize_quat_xyzw(q)
-2. quat_conjugate_xyzw(q)
-3. quat_multiply_xyzw(q1, q2)
-4. quat_to_rotvec_xyzw(q)
-5. relative_rotvec_xyzw(q_t, q_t1)
-6. compute_measured_tcp_delta_action(pos_t, quat_t, pos_t1, quat_t1, gripper_t=None, gripper_t1=None)
+measured_action = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+action_is_terminal_padding = true
 
-Input rules:
-1. Positions must be list or tuple of length 3.
-2. Quaternions must be list or tuple of length 4.
-3. Quaternion convention is xyzw.
-4. Numeric inputs must be finite real numbers.
-5. NaN and infinity are rejected with ValueError.
-6. Bool values are rejected even though bool is technically a Python numeric subtype.
-7. Gripper values may be scalar floats or one-element list/tuple values.
+measured_action length is checked to be exactly 7.
 
-Output rules:
-1. Output is a plain Python list.
-2. Output length is always 7 on success.
-3. action[0:3] is pos_t1 - pos_t.
-4. action[3:6] is relative rotation vector from quat_t to quat_t1.
-5. action[6] is gripper_t1 - gripper_t if both gripper values are provided.
-6. action[6] is 0.0 if either gripper value is missing.
-
-Rotation convention:
-1. Normalize q_t and q_t1 internally.
-2. Compute q_rel = conjugate(q_t) * q_t1.
-3. Convert q_rel to a rotation vector.
-4. Use the shortest equivalent rotation by flipping quaternion sign if w < 0.
-5. Use a small-angle branch for near-zero vector norm.
-
-This convention matches the requested relative quaternion direction and avoids depending on scipy, numpy, ROS, transforms3d, or any other package.
-
-Dummy raw episode details
--------------------------
-The dummy generator is in:
-
-src/doosan_forcevla_data/dummy/make_dummy_raw_episode.py
-
-CLI usage:
-
-PYTHONPATH=src python3 -m doosan_forcevla_data.dummy.make_dummy_raw_episode --output data/raw_dummy/episode_000000
-
-Default frame count: 20
-Default fps: 30
-Image format: tiny ASCII PPM files, 2 by 2 pixels, generated with standard-library text writing
-
-Generated raw episode tree:
-
-data/raw_dummy/episode_000000/
-metadata.json
-robot/tcp_pose.csv
-robot/joint_states.csv
-force/wrench.csv
-actions/commanded_twist.csv
-events.csv
-images/external_rgb/000000.ppm through 000019.ppm
-images/tcp_rgb/000000.ppm through 000019.ppm
-
-metadata.json contents include:
-1. episode_id
-2. task_instruction
-3. geometry_type
-4. orientation_type
-5. collection_method: dummy
-6. action_label_primary: measured_tcp_delta
-7. success: true
-8. failure_reason: null
-9. fps
-10. optional_action_streams containing commanded_twist
-
-tcp_pose.csv fields:
-1. timestamp
-2. x
-3. y
-4. z
-5. qx
-6. qy
-7. qz
-8. qw
-9. gripper_pos
-
-joint_states.csv fields:
-1. timestamp
-2. joint_pos_0 through joint_pos_5
-3. joint_vel_0 through joint_vel_5
-
-wrench.csv fields:
-1. timestamp
-2. fx
-3. fy
-4. fz
-5. tx
-6. ty
-7. tz
-
-commanded_twist.csv fields:
-1. timestamp
-2. vx
-3. vy
-4. vz
-5. wx
-6. wy
-7. wz
-8. gripper_velocity
-
-events.csv fields:
-1. timestamp
-2. event
-
-Dummy motion profile:
-1. TCP x increases smoothly from approximately 0.45 m by 0.03 m.
-2. TCP y follows a small sinusoidal lateral path.
-3. TCP z decreases smoothly by approximately 0.04 m.
-4. TCP orientation performs a small z-axis rotation.
-5. Gripper is fixed at 0.0.
-6. Joint positions move slightly and deterministically.
-7. Wrench fz increases near the final 30 percent of the episode to imitate contact.
-8. Events include episode_start, contact_begin, and success.
-
-Validator details
+Rotation handling
 -----------------
-The validator is in:
+The converter relies on the previously implemented quaternion utilities. TCP orientation is stored as xyzw. ee_axis_angle is produced by converting the absolute TCP quaternion to a rotation vector. measured_action rotation is produced by relative quaternion delta:
 
-src/doosan_forcevla_data/validate/validate_raw_episode.py
+q_rel = conjugate(q_t) * q_t1
 
-Function API:
+q_rel is then converted to a rotation vector.
 
-validate_raw_episode(episode_dir) -> ValidationResult
+This remains pure Python and does not require numpy, scipy, ROS, transforms3d, or any other package.
 
-ValidationResult fields:
-1. ok: bool
-2. errors: list[str]
+New processed validator details
+-------------------------------
+Module:
 
-CLI usage:
+src/doosan_forcevla_data/validate/validate_processed_episode.py
 
-PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_raw_episode data/raw_dummy/episode_000000
+Primary function:
 
-Validation checks currently implemented:
-1. Episode path exists.
-2. Episode path is a directory.
-3. Required files exist.
-4. Required image folders exist.
-5. metadata.json is readable JSON.
-6. metadata.json is a JSON object.
-7. metadata has all required keys.
-8. metadata fps is positive and finite.
-9. metadata success is a boolean.
-10. CSV files have headers.
-11. CSV files have at least one data row.
-12. CSV files contain required fields.
-13. CSV timestamps are strictly increasing.
-14. Required numeric CSV fields parse as finite floats.
-15. TCP pose includes position and quaternion fields.
-16. joint_states includes 6 joint positions and 6 joint velocities.
-17. wrench includes 6 force/torque fields.
-18. commanded_twist includes linear, angular, and gripper velocity command fields.
-19. events includes timestamp and event fields.
+validate_processed_episode(processed_episode_dir) -> ValidationResult
 
-The validator returns all collected errors rather than stopping at the first content error after required files are present. If required files or folders are missing, it returns early because later CSV checks would be noisy.
+CLI:
 
-Test coverage details
----------------------
-Test file: tests/test_compute_actions.py
+PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_processed_episode data/processed_dummy/episode_000000
 
-Coverage included:
-1. zero motion gives all zeros.
-2. pure x translation gives dx only.
-3. pure z rotation of 90 degrees gives dRz approximately pi/2.
-4. non-normalized quaternion input still works.
-5. invalid input sizes raise ValueError.
-6. output is length 7.
-7. output has no NaNs or infinities.
-8. gripper delta is computed when both gripper values are provided.
+Validation checks implemented:
+1. Processed episode directory exists.
+2. Processed episode path is a directory.
+3. metadata_processed.json exists.
+4. metadata_processed.json is valid JSON.
+5. metadata_processed.json is a JSON object.
+6. frames.jsonl exists.
+7. frames.jsonl has at least one line.
+8. Every JSONL line is a JSON object.
+9. metadata_processed.json contains required keys.
+10. metadata model_state_dim equals 25.
+11. metadata action_dim equals 7.
+12. metadata frame_count is an integer.
+13. metadata frame_count matches the number of JSONL frame lines.
+14. Each frame has required keys.
+15. frame_index matches the line index.
+16. timestamps are finite numbers.
+17. timestamps are strictly increasing.
+18. model_state is a list of length 25.
+19. measured_action is a list of length 7.
+20. all model_state values are finite numbers.
+21. all measured_action values are finite numbers.
+22. image paths exist.
+23. action_is_terminal_padding is boolean.
+24. exactly one frame has action_is_terminal_padding=true.
+25. the terminal padding frame is the final frame.
+26. final frame measured_action is all zeros.
+27. at least one non-final action has nonzero translation.
+28. at least one non-final action has nonzero rotation.
 
-Test file: tests/test_dummy_raw_episode.py
+Image path behavior
+-------------------
+The converter stores image paths as absolute paths pointing back to the raw dummy episode image files. The processed validator accepts absolute paths directly. It can also resolve relative paths against the processed episode directory, and if needed against source_raw_episode from metadata.
 
-Coverage included:
-1. creates a dummy raw episode inside a TemporaryDirectory.
-2. verifies required files and folders exist.
-3. runs validate_raw_episode.
-4. expects validation success.
+Raw validator change
+--------------------
+Before this task, validate_raw_episode required actions/commanded_twist.csv. That made sense for the dummy raw episode but conflicted with the broader project principle that command streams must be optional.
 
-Verification commands and results
----------------------------------
-Command 1:
+The raw validator now treats commanded_twist.csv as optional:
 
-python3 -m unittest discover -s tests -v
+1. If actions/commanded_twist.csv is absent, raw validation can still pass if required robot, wrench, event, metadata, and image fields are valid.
+2. If actions/commanded_twist.csv exists, its fields and timestamps are validated.
 
-Result:
-Failed due to src/ layout import behavior because the package is not installed in the active environment. The failure was ModuleNotFoundError: No module named 'doosan_forcevla_data'. This was expected for an uninstalled src-layout project, and no package installation was performed.
+This change is important because convert_raw_to_processed first calls validate_raw_episode. If the raw validator required commanded_twist.csv, then processed conversion would indirectly require a teleoperation stream, making hand-guided demonstrations invalid for v0 conversion.
 
-Command 2:
+New test coverage
+-----------------
+Test file:
+
+tests/test_raw_to_processed.py
+
+Test flow:
+1. Creates a TemporaryDirectory.
+2. Generates a dummy raw episode using make_dummy_raw_episode.
+3. Converts raw to processed using convert_raw_to_processed.
+4. Validates the processed episode using validate_processed_episode.
+5. Asserts metadata_processed.json exists.
+6. Asserts frames.jsonl exists.
+7. Asserts frame_count is 20.
+8. Asserts there are 20 frame records.
+9. Asserts every model_state has length 25.
+10. Asserts every measured_action has length 7.
+11. Asserts all model_state and measured_action values are finite.
+12. Asserts final frame action_is_terminal_padding is true.
+13. Asserts final frame measured_action is all zeros.
+14. Asserts at least one non-final action has nonzero translation.
+15. Asserts at least one non-final action has nonzero rotation.
+
+Verification results
+--------------------
+Command:
 
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 Result:
-Passed. The suite ran 7 tests and returned OK.
+Passed. Ran 8 tests. Result OK.
 
-Observed test cases:
+Observed tests:
 1. test_invalid_input_sizes_raise_value_error ... ok
 2. test_non_normalized_quaternion_input_still_works ... ok
 3. test_output_length_7_and_no_nans ... ok
@@ -451,96 +322,95 @@ Observed test cases:
 5. test_pure_z_rotation_90_degrees ... ok
 6. test_zero_motion_gives_all_zeros ... ok
 7. test_create_dummy_episode_and_validate_success ... ok
+8. test_convert_dummy_raw_episode_and_validate_processed ... ok
 
-Command 3:
+Manual command 1:
 
 PYTHONPATH=src python3 -m doosan_forcevla_data.dummy.make_dummy_raw_episode --output data/raw_dummy/episode_000000
 
 Result:
-Passed. Output message: Wrote dummy raw episode: data/raw_dummy/episode_000000
+Passed. Output: Wrote dummy raw episode: data/raw_dummy/episode_000000
 
-Command 4:
+Manual command 2:
 
 PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_raw_episode data/raw_dummy/episode_000000
 
 Result:
-Passed. Output message: OK: raw episode is valid: data/raw_dummy/episode_000000
+Passed. Output: OK: raw episode is valid: data/raw_dummy/episode_000000
 
-Generated and ignored artifacts
--------------------------------
-The dummy generator created:
+Manual command 3:
+
+PYTHONPATH=src python3 -m doosan_forcevla_data.convert.raw_to_processed --raw data/raw_dummy/episode_000000 --output data/processed_dummy/episode_000000
+
+Result:
+Passed. Output: OK: wrote processed episode: data/processed_dummy/episode_000000
+
+Manual command 4:
+
+PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_processed_episode data/processed_dummy/episode_000000
+
+Result:
+Passed. Output: OK: processed episode is valid: data/processed_dummy/episode_000000
+
+Generated ignored data
+----------------------
+The manual run created or refreshed:
 
 data/raw_dummy/episode_000000/
+data/processed_dummy/episode_000000/
 
-This path is ignored by .gitignore through data/raw_dummy/. Python cache directories were also created by test execution and are ignored.
+These paths are ignored by .gitignore. Python __pycache__ directories were also created by test and CLI execution and are ignored.
 
-The repository status after implementation showed source/config/test/report files as untracked because this is a newly initialized repository. Ignored generated data and __pycache__ directories were also visible with git status --ignored.
+Current git status summary
+--------------------------
+Modified tracked files:
+1. README.md
+2. src/doosan_forcevla_data/validate/validate_raw_episode.py
 
-Dependency and environment notes
---------------------------------
-The implementation intentionally uses only the Python standard library. Important standard-library modules used include argparse, csv, dataclasses, json, math, pathlib, tempfile, unittest, and typing.
+New untracked files/directories:
+1. docs/lerobot_export_plan.md
+2. src/doosan_forcevla_data/convert/raw_to_processed.py
+3. src/doosan_forcevla_data/validate/validate_processed_episode.py
+4. tests/test_raw_to_processed.py
 
-No dependency fallback was needed beyond using PYTHONPATH=src for the uninstalled src-layout package. No pip, apt, conda, or external package installation commands were run.
+Ignored generated files/directories:
+1. data/
+2. Python __pycache__ directories
 
-Important behavior guarantees in v0
------------------------------------
-1. measured_tcp_delta can be computed without commanded actions.
-2. commanded_twist.csv can exist for dummy or teleop-style episodes but is not the primary learning label.
-3. quaternion input does not need to already be normalized.
-4. invalid dimensions fail early with ValueError.
-5. NaN and infinity inputs fail early with ValueError.
-6. output action is a plain list of 7 finite floats.
-7. raw validation returns clear error messages suitable for CLI display or tests.
-8. dummy data is deterministic and small.
+Known limitations
+-----------------
+1. The converter aligns raw streams by frame index only.
+2. Advanced timestamp synchronization is not implemented yet.
+3. Images are referenced by path and are not copied into the processed episode.
+4. Image decoding, shape validation, camera calibration, and camera synchronization are not implemented.
+5. The processed format is JSONL for inspection and validation, not a final training storage format.
+6. No LeRobot parquet export is implemented yet.
+7. No Hugging Face integration is implemented.
+8. No ForceVLA training code is implemented.
+9. No ROS recorder is implemented.
+10. No any4lerobot integration is implemented.
+11. The validator checks structural and numeric properties but does not validate manipulation semantics.
+12. The wrench frame and sign convention remain as-recorded and should be made explicit for real robot data.
+13. The final frame action uses terminal zero padding, which is valid for this v0 manifest but should be revisited when choosing final training/export format conventions.
+14. Commands still require PYTHONPATH=src unless the package is installed later by the user.
 
-Known limitations and risks
+Exact next recommended task
 ---------------------------
-1. No ROS recorder is implemented.
-2. No dependency on the lab MyROS2 workspace is introduced.
-3. No real Doosan controller interface is implemented.
-4. No robot safety checks are implemented.
-5. No camera calibration model is represented.
-6. No camera timestamp synchronization validation is implemented.
-7. No image decoding or image-size validation is implemented.
-8. No raw-to-processed converter is implemented yet.
-9. No LeRobot parquet export is implemented.
-10. No Hugging Face integration is implemented.
-11. No ForceVLA training code is implemented.
-12. No schema version migration system is implemented.
-13. The dummy commanded_twist stream is synthetic and should not be treated as a real robot command log.
-14. The validator checks structural validity but not semantic correctness of a manipulation episode.
-15. The wrench frame is recorded as sensor_or_tool_frame_as_recorded in the contract, so a future real dataset should explicitly document wrench frame and sign convention.
-16. model_state includes ee_axis_angle, but the raw-to-processed converter that will compute it from ee_quat has not yet been written.
-17. The current dummy image files are PPM placeholders, not actual RGB camera captures.
-18. The package is not installed in the active environment, so commands currently need PYTHONPATH=src unless the project is installed later by the user.
+Plan the LeRobot export mapping from the validated v0 processed JSONL manifest before implementing parquet export.
 
-Recommended next task
----------------------
-Implement a v0 raw-to-processed converter that reads a validated raw episode and writes a small processed episode directory or manifest without adding ROS, LeRobot, Hugging Face, or training dependencies.
-
-Suggested scope for that task:
-1. Add src/doosan_forcevla_data/convert/raw_to_processed.py.
-2. Read metadata.json, tcp_pose.csv, joint_states.csv, and wrench.csv.
-3. Validate the raw episode first using validate_raw_episode.
-4. Align rows by frame index for v0 dummy data.
-5. Convert ee_quat to ee_axis_angle for model_state.
-6. Build model_state with exactly 25 floats in the order from processed_schema.py.
-7. Compute measured_action for frames 0 through N - 2 using compute_measured_tcp_delta_action.
-8. Define behavior for the final frame action, such as omitting the final action row or writing zeros with an explicit note in the manifest.
-9. Preserve references to external_rgb and tcp_rgb frame files.
-10. Write a compact JSON or CSV processed manifest under data/processed_dummy/.
-11. Add unittest coverage using TemporaryDirectory.
-12. Run PYTHONPATH=src python3 -m unittest discover -s tests -v.
-
-Suggested acceptance criteria for the next task:
-1. The converter succeeds on the generated dummy raw episode.
-2. The processed output includes model_state vectors of length 25.
-3. The processed output includes measured_action vectors of length 7.
-4. All numeric outputs are finite.
-5. The processed output records quaternion convention xyzw and action convention measured_tcp_delta.
-6. The converter remains standard-library-only.
-7. No ROS, LeRobot, Hugging Face, or training dependencies are added.
+Recommended scope for that planning task:
+1. Decide episode-level metadata mapping.
+2. Decide observation key names for external_rgb, tcp_rgb, model_state, ee_pos, ee_quat, wrench, joint_pos, and joint_vel.
+3. Decide action key naming for measured_action.
+4. Decide how terminal padded action frames should be represented or excluded.
+5. Decide whether image paths are copied, symlinked, or encoded during export.
+6. Decide train/validation split metadata conventions.
+7. Keep any4lerobot as a reference only, with no integration until the mapping is stable.
 
 Bottom line
 -----------
-The repository now has a clean v0 foundation for collection-method-independent dataset tooling. The next practical step is to implement raw-to-processed conversion so the dummy raw episode can produce the first fixed-shape imitation-learning records.
+The repository now has a complete small v0 pipeline:
+
+raw dummy episode -> validate raw -> convert to processed JSONL -> validate processed
+
+The processed records contain fixed-shape 25-dimensional model_state vectors, 7-dimensional measured TCP delta action labels, terminal action padding, timestamps, and image references. This gives a safe foundation for future LeRobot export planning without coupling the dataset to a teleoperation method.

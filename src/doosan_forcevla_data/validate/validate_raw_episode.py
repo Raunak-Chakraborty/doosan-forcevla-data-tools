@@ -125,7 +125,6 @@ def validate_raw_episode(episode_dir: str | Path) -> ValidationResult:
         RAW_EPISODE_PATHS.tcp_pose,
         RAW_EPISODE_PATHS.joint_states,
         RAW_EPISODE_PATHS.wrench,
-        RAW_EPISODE_PATHS.commanded_twist,
         RAW_EPISODE_PATHS.events,
     ]
     for relative_path in required_files:
@@ -149,7 +148,12 @@ def validate_raw_episode(episode_dir: str | Path) -> ValidationResult:
         + [f"joint_pos_{idx}" for idx in range(6)]
         + [f"joint_vel_{idx}" for idx in range(6)],
         RAW_EPISODE_PATHS.wrench: ["timestamp", "fx", "fy", "fz", "tx", "ty", "tz"],
-        RAW_EPISODE_PATHS.commanded_twist: [
+        RAW_EPISODE_PATHS.events: ["timestamp", "event"],
+    }
+
+    commanded_twist_path = root / RAW_EPISODE_PATHS.commanded_twist
+    if commanded_twist_path.is_file():
+        csv_specs[RAW_EPISODE_PATHS.commanded_twist] = [
             "timestamp",
             "vx",
             "vy",
@@ -158,9 +162,7 @@ def validate_raw_episode(episode_dir: str | Path) -> ValidationResult:
             "wy",
             "wz",
             "gripper_velocity",
-        ],
-        RAW_EPISODE_PATHS.events: ["timestamp", "event"],
-    }
+        ]
 
     for relative_path, required_fields in csv_specs.items():
         path = root / relative_path

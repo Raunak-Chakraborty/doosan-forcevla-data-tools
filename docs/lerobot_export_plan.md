@@ -77,6 +77,27 @@ Future LeRobot export should either:
 
 Do not decide the implementation yet. The next step should only produce a dry-run manifest.
 
+## Dry-run Export Manifest
+
+The dry-run export manifest is the next step before real LeRobot parquet export. It reads a validated processed JSONL episode and reports what would be exported for a selected profile without writing training-ready data.
+
+It verifies:
+
+- selected export profile
+- planned LeRobot-like keys
+- observation and action dimensions
+- image availability
+- terminal-frame exclusion
+- first exported record shape preview
+
+It still does not:
+
+- write parquet
+- encode videos
+- copy images
+- upload to Hugging Face
+- import LeRobot
+
 ## any4lerobot Usage
 
 - Use only as a reference for LeRobot metadata and version conventions.
@@ -84,6 +105,4 @@ Do not decide the implementation yet. The next step should only produce a dry-ru
 
 ## Next Implementation After This Planning Step
 
-Implement a dry-run export manifest generator, not parquet.
-
-The dry-run generator should produce planned LeRobot keys and dimensions without writing videos or parquet files. It should verify which profile is selected, which frames would be exported, the resulting observation/action dimensions, image path availability, and terminal-frame exclusion behavior.
+After the dry-run manifest is stable, implement the first real export staging step. That should still avoid Hugging Face upload and should explicitly decide whether images are copied into staging or encoded directly from references.

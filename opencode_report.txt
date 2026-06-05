@@ -1,139 +1,183 @@
-Doosan ForceVLA Data Tools v0 Inspection and Export Mapping Report
-===================================================================
+Doosan ForceVLA Data Tools v0 Timing Fix and Dry-run Export Plan Report
+========================================================================
 
 Repository
 ----------
 Path: /home/horus/robotics_thesis/doosan_forcevla_data_tools
-Robot/task context: Doosan M1013 peg-in-hole thesis dataset tools
-Dataset target direction: ForceVLA/tshiamor-style imitation learning, with future LeRobot export
-Committed baseline before this task:
-1. e7dae7c Add v0 dataset foundation
-2. 144e0f3 Add v0 raw-to-processed conversion
+Robot/task context: Doosan M1013 peg-in-hole dataset preparation
+Target direction: ForceVLA/tshiamor-style imitation learning with future LeRobot-compatible export
 
-Current pipeline after this task
---------------------------------
-The repository now supports this standard-library-only local pipeline:
+Committed baseline before this task
+-----------------------------------
+1. v0 dataset foundation
+2. v0 raw-to-processed conversion
+3. processed episode inspector and export mapping plan
 
-raw dummy episode -> validate raw -> convert to processed JSONL -> validate processed -> inspect processed
+Current working pipeline
+------------------------
+The repository now supports this local standard-library-only pipeline:
 
-The processed output remains:
+raw dummy episode -> validate raw -> convert to processed JSONL -> validate processed -> inspect processed -> plan dry-run export -> validate export plan
 
-data/processed_dummy/episode_000000/metadata_processed.json
-data/processed_dummy/episode_000000/frames.jsonl
-
-This is still not LeRobot parquet export, not Hugging Face integration, and not ForceVLA training code.
-
-Core design preserved
----------------------
-The dataset remains independent of demonstration collection method. The primary learning action label is still measured TCP delta computed from robot state:
+The primary action label remains measured TCP delta from robot state:
 
 action[t] = TCP pose delta from t to t + 1
 
-The inspector and export plan do not require commanded_twist, commanded_action, predicted_action, or selected_action. Those streams can remain optional future auxiliary streams.
+No commanded action stream is required. This preserves compatibility with hand-guiding, teleoperation, SpaceMouse, VR controller, and future policy shadow-mode logs.
+
+Constraints followed
+--------------------
+1. No ROS recorder was implemented.
+2. No LeRobot parquet export was implemented.
+3. No video encoding was implemented.
+4. No packages were installed.
+5. No Hugging Face integration was added.
+6. No any4lerobot clone or integration was added.
+7. Only Python standard library modules are used.
+8. No files outside this repository were modified.
+9. No commit was made automatically.
 
 Files created or modified
 -------------------------
 1. src/doosan_forcevla_data/inspect/inspect_processed_episode.py
-   Added the processed episode inspector CLI and the testable summary helper summarize_processed_episode(). The helper validates the processed episode first, then computes summary, action, wrench, and image-stream statistics.
+   Fixed inspector timestep/duration reporting. The inspector no longer labels frame_count / fps as duration. It now reports timestamp start, timestamp end, timestamp span, nominal dt, and nominal frame coverage separately.
 
-2. tests/test_inspect_processed_episode.py
-   Added unittest coverage for the inspector helper using a TemporaryDirectory, generated dummy raw episode, raw-to-processed conversion, and summary assertions.
+2. src/doosan_forcevla_data/convert/plan_lerobot_export.py
+   Added a dry-run LeRobot / ForceVLA export manifest generator. It validates the processed episode, applies an export profile, excludes terminal padding frames, verifies image availability, writes a small JSON manifest, and prints a compact summary. It does not write parquet, copy images, encode videos, import LeRobot, or use Hugging Face.
 
-3. docs/lerobot_export_plan.md
-   Replaced the short note with a concrete LeRobot / ForceVLA export mapping plan. This is a planning document only, not implementation.
+3. src/doosan_forcevla_data/validate/validate_export_plan.py
+   Added a validator for dry-run export plan JSON manifests.
 
-4. README.md
-   Added the processed inspection command and documented the planned export profiles: forcevla_13d first and doosan_full_25d later.
+4. tests/test_inspect_processed_episode.py
+   Added assertions for timestamp_span_seconds, nominal_frame_coverage_seconds, and nominal_dt_seconds.
 
-5. opencode_report.txt
-   Updated this detailed report.
+5. tests/test_plan_lerobot_export.py
+   Added unittest coverage for forcevla_13d and doosan_full_25d dry-run export plans.
 
-Processed inspector details
----------------------------
+6. docs/lerobot_export_plan.md
+   Added a Dry-run Export Manifest section and clarified that the dry-run manifest verifies mappings and dimensions before real parquet/video export work.
+
+7. README.md
+   Added commands for fixed inspection output, forcevla_13d export planning, export plan validation, and doosan_full_25d export planning.
+
+8. opencode_report.txt
+   Updated this report.
+
+Inspector timing fix
+--------------------
+Previous behavior:
+
+duration_seconds = frame_count / fps
+
+For a 20-frame episode at 30 FPS, this printed 0.666666667 seconds. That value is nominal frame coverage, not timestamp duration. The actual timestamp span for frames starting at 0 is:
+
+last_timestamp - first_timestamp = 19 / 30 = 0.633333333 seconds
+
+New inspector summary fields:
+1. fps
+2. nominal_dt_seconds = 1 / fps if fps > 0 else 0
+3. timestamp_start_seconds = first frame timestamp
+4. timestamp_end_seconds = last frame timestamp
+5. timestamp_span_seconds = timestamp_end_seconds - timestamp_start_seconds
+6. nominal_frame_coverage_seconds = frame_count / fps if fps > 0 else 0
+
+The printed output now shows all five timing fields and no longer prints frame_count / fps as duration_seconds.
+
+Dry-run export planner details
+------------------------------
 Module:
 
-src/doosan_forcevla_data/inspect/inspect_processed_episode.py
+src/doosan_forcevla_data/convert/plan_lerobot_export.py
 
 CLI:
 
-PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.inspect_processed_episode data/processed_dummy/episode_000000
+PYTHONPATH=src python3 -m doosan_forcevla_data.convert.plan_lerobot_export --processed data/processed_dummy/episode_000000 --profile forcevla_13d --output data/processed_dummy/episode_000000/export_plan_forcevla_13d.json
 
-Public helper:
+Supported profiles:
+1. forcevla_13d
+2. doosan_full_25d
 
-summarize_processed_episode(processed_episode_dir) -> dict[str, Any]
+Behavior:
+1. Validates the processed episode first using validate_processed_episode.
+2. Reads metadata_processed.json.
+3. Reads frames.jsonl.
+4. Excludes frames where action_is_terminal_padding is true.
+5. Keeps terminal_padding_excluded = true in the manifest.
+6. Counts excluded terminal padding frames.
+7. Checks image availability for exported frames.
+8. Writes a compact JSON manifest.
+9. Prints a human-readable summary.
+10. Does not write parquet.
+11. Does not copy images.
+12. Does not encode videos.
+13. Does not import LeRobot.
+14. Does not use Hugging Face.
 
-Validation behavior:
-1. Calls validate_processed_episode before computing statistics.
-2. Raises ValueError from the helper if validation fails.
-3. CLI prints clear validation errors and exits nonzero if validation fails.
+forcevla_13d profile mapping
+----------------------------
+Purpose:
+First compatibility target for official ForceVLA / tshiamor-like loading.
 
-Summary fields printed:
-1. episode path
-2. frame count
-3. fps
-4. duration seconds
-5. model_state_dim
-6. action_dim
-7. task_instruction
-8. geometry_type
-9. orientation_type
-10. collection_method
-11. success
+Mapping:
+1. observation.image = external_rgb_path
+2. observation.wrist_image = tcp_rgb_path
+3. observation.state = first 13 values of model_state
+4. observation.state layout = ee_pos(3) + ee_axis_angle(3) + gripper_pos(1) + wrench(6)
+5. action = measured_action
+6. task = task_instruction
+7. expected observation_state_dim = 13
+8. expected action_dim = 7
+9. terminal padded final frame excluded by default
 
-Action statistics computed over non-terminal frames only:
-1. mean translation step norm
-2. max translation step norm
-3. mean rotation step norm
-4. max rotation step norm
-5. count of nonzero translation actions
-6. count of nonzero rotation actions
+doosan_full_25d profile mapping
+-------------------------------
+Purpose:
+Future full-proprioception experiments.
 
-Wrench statistics:
-The inspector reads wrench values from model_state indices 7 through 12. This matches the current model_state order:
+Mapping:
+1. observation.image = external_rgb_path
+2. observation.wrist_image = tcp_rgb_path
+3. observation.state = full 25D model_state
+4. action = measured_action
+5. task = task_instruction
+6. expected observation_state_dim = 25
+7. expected action_dim = 7
+8. terminal padded final frame excluded by default
 
-ee_pos(3), ee_axis_angle(3), gripper(1), wrench(6), joint_pos(6), joint_vel(6)
+Export plan validator details
+-----------------------------
+Module:
 
-Printed wrench values:
-1. max absolute Fx
-2. max absolute Fy
-3. max absolute Fz
-4. max absolute Tx
-5. max absolute Ty
-6. max absolute Tz
-7. max force norm
-8. max torque norm
+src/doosan_forcevla_data/validate/validate_export_plan.py
 
-Image stream status:
-1. Count of existing external_rgb_path files.
-2. Count of existing tcp_rgb_path files.
+CLI:
 
-Inspector test coverage
------------------------
-Test file:
+PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_export_plan data/processed_dummy/episode_000000/export_plan_forcevla_13d.json
 
-tests/test_inspect_processed_episode.py
+Validation checks:
+1. Manifest file exists.
+2. Manifest is valid JSON.
+3. Manifest root is a JSON object.
+4. profile is forcevla_13d or doosan_full_25d.
+5. exported_frame_count > 0.
+6. input_frame_count > exported_frame_count when terminal padding is excluded.
+7. excluded_terminal_padding_frame_count == 1 for the current v0/dummy convention.
+8. required lerobot_like_keys exist.
+9. observation_state_dim is 13 for forcevla_13d.
+10. observation_state_dim is 25 for doosan_full_25d.
+11. action_dim is 7.
+12. image existing counts match exported_frame_count.
+13. first_exported_record_preview observation_state_length matches expected state dim.
+14. first_exported_record_preview action_length matches expected action dim.
 
-The test does the following:
-1. Creates a TemporaryDirectory.
-2. Generates a dummy raw episode.
-3. Converts it to processed JSONL.
-4. Calls summarize_processed_episode().
-5. Asserts frame_count is 20.
-6. Asserts action_dim is 7.
-7. Asserts model_state_dim is 25.
-8. Asserts max_translation_step_norm > 0.
-9. Asserts max_rotation_step_norm > 0.
-10. Asserts external_rgb file count is 20.
-11. Asserts tcp_rgb file count is 20.
-
-Verification commands and results
----------------------------------
+Tests run and result
+--------------------
 Command:
 
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 Result:
-Passed. Ran 9 tests. Result OK.
+Passed. Ran 10 tests. Result OK.
 
 Observed tests:
 1. test_invalid_input_sizes_raise_value_error ... ok
@@ -144,161 +188,164 @@ Observed tests:
 6. test_zero_motion_gives_all_zeros ... ok
 7. test_create_dummy_episode_and_validate_success ... ok
 8. test_summary_for_converted_dummy_episode ... ok
-9. test_convert_dummy_raw_episode_and_validate_processed ... ok
+9. test_forcevla_and_full_profile_export_plans ... ok
+10. test_convert_dummy_raw_episode_and_validate_processed ... ok
 
-Manual command 1:
+Manual verification commands and results
+----------------------------------------
+Command 1:
 
 PYTHONPATH=src python3 -m doosan_forcevla_data.dummy.make_dummy_raw_episode --output data/raw_dummy/episode_000000
 
 Result:
-Passed. Output:
 
 Wrote dummy raw episode: data/raw_dummy/episode_000000
 
-Manual command 2:
+Command 2:
 
 PYTHONPATH=src python3 -m doosan_forcevla_data.convert.raw_to_processed --raw data/raw_dummy/episode_000000 --output data/processed_dummy/episode_000000
 
 Result:
-Passed. Output:
 
 OK: wrote processed episode: data/processed_dummy/episode_000000
 
-Note: raw validation was not a separate requested manual command in this task, but convert_raw_to_processed calls validate_raw_episode internally before conversion.
+Note: convert_raw_to_processed validates the raw episode internally before writing processed output.
 
-Manual command 3:
+Command 3:
 
 PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.inspect_processed_episode data/processed_dummy/episode_000000
 
 Result:
-Passed. The inspector internally validated the processed episode before printing statistics.
+Passed.
 
-Inspector output summary
-------------------------
-The inspector printed:
+Corrected inspector timing output:
 
 frame count: 20
 fps: 30
-duration seconds: 0.666666667
+nominal dt seconds: 0.0333333333
+nominal frame coverage seconds: 0.666666667
+
+Other inspector summary values:
+
 model_state_dim: 25
-action_dim: 7
-task_instruction: Insert the peg into the hole.
 geometry_type: round_peg_round_hole
 orientation_type: vertical_insertion
 collection_method: dummy
 success: True
-
-Action statistics over non-terminal frames:
-
 mean translation step norm: 0.00287417297
 max translation step norm: 0.00310392399
 mean rotation step norm: 0.00421052629
 max rotation step norm: 0.00421052747
 nonzero translation actions: 19
 nonzero rotation actions: 19
-
-Wrench statistics:
-
-max abs Fx: 0.199316899
-max abs Fy: 0
-max abs Fz: 12
-max abs Tx: 0
-max abs Ty: 0.03
-max abs Tz: 0
 max force norm: 12
 max torque norm: 0.03
-
-Image stream status:
-
 external_rgb_path files existing: 20 / 20
+tcp_rgb_path files existing: 20 / 20
 
-Updated export-plan decisions
------------------------------
-The concrete mapping document is now:
+Command 4:
 
-docs/lerobot_export_plan.md
+PYTHONPATH=src python3 -m doosan_forcevla_data.convert.plan_lerobot_export --processed data/processed_dummy/episode_000000 --profile forcevla_13d --output data/processed_dummy/episode_000000/export_plan_forcevla_13d.json
 
-It defines the current internal processed format:
-1. metadata_processed.json
-2. frames.jsonl
-3. model_state 25D
-4. measured_action 7D
-5. image references
+Result:
+Passed.
 
-Export profile A: forcevla_13d
-Purpose:
-First compatibility target for official ForceVLA / tshiamor-like loading.
+forcevla_13d export-plan summary:
 
-Mapping:
-1. observation.image = external_rgb
-2. observation.wrist_image = tcp_rgb
-3. optional missing third camera = zero-filled later by ForceVLA transform or export profile
-4. observation.state = 13D: ee_pos(3) + ee_axis_angle(3) + gripper_pos(1) + wrench(6)
-5. action = measured_action 7D
-6. task = task_instruction
-7. final terminal-padded frame excluded from training/export by default
+profile: forcevla_13d
+dataset_name: doosan_peg_in_hole_v0
+robot_type: doosan_m1013
+fps: 30
+input frames: 20
+exported frames: 19
+excluded terminal padding frames: 1
+observation.state dim: 13
+observation.image files existing: 19 / 19
+observation.wrist_image files existing: 19 / 19
+notes: dry run only; no parquet written; no videos encoded; no Hugging Face upload
 
-Export profile B: doosan_full_25d
-Purpose:
-Future full-proprioception experiments.
+Command 5:
 
-Mapping:
-1. observation.image = external_rgb
-2. observation.wrist_image = tcp_rgb
-3. observation.state = full 25D model_state
-4. action = measured_action 7D
-5. task = task_instruction
-6. final terminal-padded frame excluded from training/export by default
+PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_export_plan data/processed_dummy/episode_000000/export_plan_forcevla_13d.json
 
-Image handling decision:
-1. Current processed JSONL stores image references only.
-2. Future export should either copy images into export staging before video encoding, or encode videos directly from referenced raw images.
-3. Implementation choice is intentionally deferred.
+Result:
 
-any4lerobot decision:
-1. Use only as a reference for LeRobot metadata and version conventions.
-2. Do not clone, vendor, import, or integrate it until this repository's export mapping is stable.
+OK: export plan is valid: data/processed_dummy/episode_000000/export_plan_forcevla_13d.json
 
-Next implementation after this planning step:
-Implement a dry-run export manifest generator, not parquet. It should report planned LeRobot keys, dimensions, selected profile, frame inclusion/exclusion, and image availability without writing videos or parquet files.
+Command 6:
 
-README update
--------------
-README.md now includes:
-1. The processed episode inspector command.
-2. A note that forcevla_13d is the next planned export target.
-3. A note that doosan_full_25d is reserved for future full-proprioception experiments.
+PYTHONPATH=src python3 -m doosan_forcevla_data.convert.plan_lerobot_export --processed data/processed_dummy/episode_000000 --profile doosan_full_25d --output data/processed_dummy/episode_000000/export_plan_doosan_full_25d.json
+
+Result:
+Passed.
+
+doosan_full_25d export-plan summary:
+
+profile: doosan_full_25d
+dataset_name: doosan_peg_in_hole_v0
+robot_type: doosan_m1013
+fps: 30
+input frames: 20
+exported frames: 19
+excluded terminal padding frames: 1
+observation.state dim: 25
+observation.image files existing: 19 / 19
+observation.wrist_image files existing: 19 / 19
+notes: dry run only; no parquet written; no videos encoded; no Hugging Face upload
+
+Command 7:
+
+PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_export_plan data/processed_dummy/episode_000000/export_plan_doosan_full_25d.json
+
+Result:
+
+OK: export plan is valid: data/processed_dummy/episode_000000/export_plan_doosan_full_25d.json
+
+Generated ignored artifacts
+---------------------------
+The manual verification refreshed or created ignored dummy artifacts under:
+
+data/raw_dummy/episode_000000/
+data/processed_dummy/episode_000000/
+
+The dry-run manifests were written under the ignored processed dummy directory:
+
+data/processed_dummy/episode_000000/export_plan_forcevla_13d.json
+data/processed_dummy/episode_000000/export_plan_doosan_full_25d.json
+
+These are intentionally small and human-readable, but still ignored because data/raw_dummy and data/processed_dummy are ignored paths.
 
 Known limitations
 -----------------
-1. No ROS recorder is implemented.
-2. No LeRobot parquet export is implemented.
-3. No Hugging Face integration is implemented.
-4. No any4lerobot integration is implemented.
-5. No package installation was performed.
-6. The inspector is read-only and does not generate plots.
-7. The inspector assumes the current v0 model_state layout for wrench indices 7 through 12.
-8. The current processed format stores image path references and does not copy or encode images.
-9. The converter still aligns streams by frame index only.
-10. Advanced timestamp synchronization is not implemented.
-11. The export plan is a mapping decision document only, not executable export code.
-12. The final terminal-padded frame policy is planned as exclude-by-default for future export, but no export code implements that yet.
+1. No ROS recorder exists yet.
+2. No real robot data collection exists yet.
+3. No LeRobot parquet export exists yet.
+4. No video encoding exists yet.
+5. No image copying or staging exists yet.
+6. No Hugging Face integration exists yet.
+7. No any4lerobot integration exists yet.
+8. The dry-run planner validates mapping and dimensions only; it does not produce training-ready artifacts.
+9. The planner still relies on the v0 JSONL processed manifest.
+10. The converter still aligns raw streams by frame index only.
+11. Advanced timestamp synchronization is not implemented.
+12. The export-plan validator currently expects one excluded terminal padding frame, matching the current v0/dummy convention.
+13. The ForceVLA third-camera placeholder is only a mapping-plan decision and is not generated by the dry-run planner.
+14. Commands still require PYTHONPATH=src unless the project is installed later.
 
 Exact next recommended task
 ---------------------------
-Implement a dry-run export manifest generator for the planned export profiles.
+Implement an export staging dry run for forcevla_13d that materializes a small, inspectable staging directory without parquet or videos.
 
 Recommended scope:
-1. Add a module such as src/doosan_forcevla_data/convert/plan_lerobot_export.py.
-2. Accept a processed episode directory and an export profile name, starting with forcevla_13d.
-3. Validate the processed episode first.
-4. Exclude the final terminal-padded frame by default.
-5. Print or write a small JSON manifest describing planned keys and dimensions.
-6. For forcevla_13d, verify observation.state length 13 and action length 7.
-7. For doosan_full_25d, verify observation.state length 25 and action length 7.
-8. Verify image references exist.
-9. Do not write parquet, encode videos, use Hugging Face, install dependencies, or integrate any4lerobot.
+1. Read the validated export plan and processed episode.
+2. Write a small staging manifest listing exported frame indices, image source paths, observation.state lengths, action lengths, and task strings.
+3. Keep terminal-padded final frame excluded.
+4. Do not copy images yet unless explicitly requested.
+5. Do not encode videos.
+6. Do not write parquet.
+7. Do not import LeRobot or Hugging Face.
+8. Add tests that verify forcevla_13d staged records have 13D state and 7D actions.
 
 Bottom line
 -----------
-The repository now has a complete small v0 inspection loop for processed JSONL episodes and a concrete, non-executable export mapping plan. The next safe implementation step is a dry-run manifest generator before any LeRobot parquet export work.
+The inspector now reports timestamp span correctly, and the repository has a validated dry-run export manifest generator for both forcevla_13d and doosan_full_25d. This creates a safe bridge between the internal processed JSONL format and future real LeRobot/ForceVLA export work without prematurely adding heavy dependencies or training-data writers.

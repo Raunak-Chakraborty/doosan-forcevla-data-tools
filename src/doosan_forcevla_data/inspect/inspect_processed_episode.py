@@ -72,7 +72,11 @@ def summarize_processed_episode(processed_episode_dir: str | Path) -> dict[str, 
     frames = _read_frames(root / "frames.jsonl")
     frame_count = len(frames)
     fps = float(metadata.get("fps", 0.0))
-    duration_seconds = frame_count / fps if fps > 0.0 else 0.0
+    nominal_dt_seconds = 1.0 / fps if fps > 0.0 else 0.0
+    timestamp_start_seconds = float(frames[0]["timestamp"]) if frames else 0.0
+    timestamp_end_seconds = float(frames[-1]["timestamp"]) if frames else 0.0
+    timestamp_span_seconds = timestamp_end_seconds - timestamp_start_seconds if frames else 0.0
+    nominal_frame_coverage_seconds = frame_count / fps if fps > 0.0 else 0.0
 
     non_terminal_frames = [frame for frame in frames if not frame["action_is_terminal_padding"]]
     translation_norms = [_norm(frame["measured_action"][:3]) for frame in non_terminal_frames]
@@ -105,7 +109,11 @@ def summarize_processed_episode(processed_episode_dir: str | Path) -> dict[str, 
         "episode_path": str(root),
         "frame_count": frame_count,
         "fps": fps,
-        "duration_seconds": duration_seconds,
+        "nominal_dt_seconds": nominal_dt_seconds,
+        "timestamp_start_seconds": timestamp_start_seconds,
+        "timestamp_end_seconds": timestamp_end_seconds,
+        "timestamp_span_seconds": timestamp_span_seconds,
+        "nominal_frame_coverage_seconds": nominal_frame_coverage_seconds,
         "model_state_dim": metadata.get("model_state_dim"),
         "action_dim": metadata.get("action_dim"),
         "task_instruction": metadata.get("task_instruction"),
@@ -141,7 +149,11 @@ def print_summary(summary: dict[str, Any]) -> None:
     print(f"episode path: {summary['episode_path']}")
     print(f"frame count: {summary['frame_count']}")
     print(f"fps: {_format_float(summary['fps'])}")
-    print(f"duration seconds: {_format_float(summary['duration_seconds'])}")
+    print(f"timestamp start seconds: {_format_float(summary['timestamp_start_seconds'])}")
+    print(f"timestamp end seconds: {_format_float(summary['timestamp_end_seconds'])}")
+    print(f"timestamp span seconds: {_format_float(summary['timestamp_span_seconds'])}")
+    print(f"nominal dt seconds: {_format_float(summary['nominal_dt_seconds'])}")
+    print(f"nominal frame coverage seconds: {_format_float(summary['nominal_frame_coverage_seconds'])}")
     print(f"model_state_dim: {summary['model_state_dim']}")
     print(f"action_dim: {summary['action_dim']}")
     print(f"task_instruction: {summary['task_instruction']}")

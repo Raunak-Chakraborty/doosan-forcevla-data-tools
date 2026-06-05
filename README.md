@@ -50,6 +50,7 @@ This repository currently provides:
 - a simple raw-to-processed JSONL converter
 - a processed episode validator CLI
 - a processed episode inspector CLI
+- a dry-run LeRobot / ForceVLA export manifest planner
 - standard-library `unittest` tests
 
 ## Current Pipeline Status
@@ -79,7 +80,27 @@ Inspect a processed episode with:
 PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.inspect_processed_episode data/processed_dummy/episode_000000
 ```
 
+The inspector reports timestamp span separately from nominal frame coverage. For example, a 20-frame episode at 30 FPS starting at timestamp 0 has a timestamp span of `19 / 30` seconds and nominal frame coverage of `20 / 30` seconds.
+
 The next export target is planned as `forcevla_13d` first, using external RGB, TCP RGB, a 13D state subset, and the measured TCP delta action. The `doosan_full_25d` profile is kept for future full-proprioception experiments.
+
+## Dry-run Export Planning
+
+Plan the first ForceVLA-compatible profile without writing parquet or videos:
+
+```bash
+PYTHONPATH=src python3 -m doosan_forcevla_data.convert.plan_lerobot_export --processed data/processed_dummy/episode_000000 --profile forcevla_13d --output data/processed_dummy/episode_000000/export_plan_forcevla_13d.json
+PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_export_plan data/processed_dummy/episode_000000/export_plan_forcevla_13d.json
+```
+
+Plan the future full-proprioception profile:
+
+```bash
+PYTHONPATH=src python3 -m doosan_forcevla_data.convert.plan_lerobot_export --processed data/processed_dummy/episode_000000 --profile doosan_full_25d --output data/processed_dummy/episode_000000/export_plan_doosan_full_25d.json
+PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_export_plan data/processed_dummy/episode_000000/export_plan_doosan_full_25d.json
+```
+
+These export plans are dry runs only. They verify keys, dimensions, image availability, and terminal-frame exclusion, but do not write training-ready data.
 
 ## Limitations
 
@@ -90,6 +111,7 @@ The next export target is planned as `forcevla_13d` first, using external RGB, T
 - Dummy image files are tiny PPM placeholders, not real camera captures.
 - The v0 raw validator checks structure and basic numeric validity only; it does not validate calibration, time synchronization quality, or task semantics.
 - The v0 processed output uses JSONL records for inspection and testing; it is not a final training storage format.
+- The export planner writes a small JSON dry-run manifest only; it does not create LeRobot parquet or videos.
 
 ## Example Commands
 
@@ -102,4 +124,8 @@ PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_raw_episode dat
 PYTHONPATH=src python3 -m doosan_forcevla_data.convert.raw_to_processed --raw data/raw_dummy/episode_000000 --output data/processed_dummy/episode_000000
 PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_processed_episode data/processed_dummy/episode_000000
 PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.inspect_processed_episode data/processed_dummy/episode_000000
+PYTHONPATH=src python3 -m doosan_forcevla_data.convert.plan_lerobot_export --processed data/processed_dummy/episode_000000 --profile forcevla_13d --output data/processed_dummy/episode_000000/export_plan_forcevla_13d.json
+PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_export_plan data/processed_dummy/episode_000000/export_plan_forcevla_13d.json
+PYTHONPATH=src python3 -m doosan_forcevla_data.convert.plan_lerobot_export --processed data/processed_dummy/episode_000000 --profile doosan_full_25d --output data/processed_dummy/episode_000000/export_plan_doosan_full_25d.json
+PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_export_plan data/processed_dummy/episode_000000/export_plan_doosan_full_25d.json
 ```

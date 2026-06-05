@@ -49,6 +49,7 @@ This repository currently provides:
 - a raw episode validator CLI
 - a simple raw-to-processed JSONL converter
 - a processed episode validator CLI
+- a processed episode inspector CLI
 - standard-library `unittest` tests
 
 ## Current Pipeline Status
@@ -70,6 +71,16 @@ PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_processed_episo
 
 The processed output is still a small human-readable JSONL manifest with image path references. It is not yet LeRobot parquet export and it is not yet ForceVLA training-ready. The next future step after this conversion layer is LeRobot export planning.
 
+## Processed Inspection Command
+
+Inspect a processed episode with:
+
+```bash
+PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.inspect_processed_episode data/processed_dummy/episode_000000
+```
+
+The next export target is planned as `forcevla_13d` first, using external RGB, TCP RGB, a 13D state subset, and the measured TCP delta action. The `doosan_full_25d` profile is kept for future full-proprioception experiments.
+
 ## Limitations
 
 - No ROS dependency is included yet.
@@ -90,4 +101,5 @@ PYTHONPATH=src python3 -m doosan_forcevla_data.dummy.make_dummy_raw_episode --ou
 PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_raw_episode data/raw_dummy/episode_000000
 PYTHONPATH=src python3 -m doosan_forcevla_data.convert.raw_to_processed --raw data/raw_dummy/episode_000000 --output data/processed_dummy/episode_000000
 PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_processed_episode data/processed_dummy/episode_000000
+PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.inspect_processed_episode data/processed_dummy/episode_000000
 ```

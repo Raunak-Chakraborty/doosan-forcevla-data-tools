@@ -1,318 +1,139 @@
-Doosan ForceVLA Data Tools v0 Raw-to-Processed Conversion Report
-=================================================================
+Doosan ForceVLA Data Tools v0 Inspection and Export Mapping Report
+===================================================================
 
 Repository
 ----------
 Path: /home/horus/robotics_thesis/doosan_forcevla_data_tools
-Project type: laptop-only Python repository
-Robot/task context: Doosan M1013 peg-in-hole robotics thesis
-Dataset target direction: ForceVLA/tshiamor-style and future LeRobot-style imitation-learning datasets
-Previous committed baseline: v0 dataset foundation
-Previous commit message: Add v0 dataset foundation
-Current task: implement v0 raw-to-processed conversion
+Robot/task context: Doosan M1013 peg-in-hole thesis dataset tools
+Dataset target direction: ForceVLA/tshiamor-style imitation learning, with future LeRobot export
+Committed baseline before this task:
+1. e7dae7c Add v0 dataset foundation
+2. 144e0f3 Add v0 raw-to-processed conversion
 
-Executive summary
------------------
-Implemented the v0 raw-to-processed conversion layer. The repository can now generate a tiny dummy raw episode, validate the raw episode, convert it into a fixed-shape processed JSONL episode, and validate the processed episode end-to-end using only the Python standard library.
+Current pipeline after this task
+--------------------------------
+The repository now supports this standard-library-only local pipeline:
 
-The processed output remains deliberately simple and human-readable:
+raw dummy episode -> validate raw -> convert to processed JSONL -> validate processed -> inspect processed
 
-1. metadata_processed.json
-2. frames.jsonl
+The processed output remains:
 
-This is not yet LeRobot parquet export and not yet ForceVLA training-ready. It is a stable intermediate representation for checking schema, action labels, image references, and future export logic.
+data/processed_dummy/episode_000000/metadata_processed.json
+data/processed_dummy/episode_000000/frames.jsonl
 
-Most important design point
----------------------------
-The primary learning action label remains measured TCP delta computed from robot state:
+This is still not LeRobot parquet export, not Hugging Face integration, and not ForceVLA training code.
+
+Core design preserved
+---------------------
+The dataset remains independent of demonstration collection method. The primary learning action label is still measured TCP delta computed from robot state:
 
 action[t] = TCP pose delta from t to t + 1
 
-The converter does not read commanded_twist.csv, commanded_action, predicted_action, or selected_action to create the learning action. Those streams may exist later as optional auxiliary data, but the processed v0 dataset does not depend on them.
-
-This keeps the dataset compatible with:
-
-1. hand-guided demonstrations with no commanded action stream
-2. keyboard or joystick teleoperation logs
-3. SpaceMouse teleoperation logs
-4. VR controller logs
-5. future policy shadow-mode logs
-
-Constraints followed
---------------------
-1. No ROS recorder was implemented.
-2. No LeRobot parquet export was implemented.
-3. No Hugging Face integration was added.
-4. No any4lerobot cloning or integration was performed.
-5. No packages were installed.
-6. No heavy dependencies were added.
-7. Only the Python standard library is used.
-8. No files outside this repository were modified.
-9. Output data remains small and human-readable.
-10. No commit was made automatically.
+The inspector and export plan do not require commanded_twist, commanded_action, predicted_action, or selected_action. Those streams can remain optional future auxiliary streams.
 
 Files created or modified
 -------------------------
-1. src/doosan_forcevla_data/convert/raw_to_processed.py
-   Added the v0 raw-to-processed converter and CLI.
+1. src/doosan_forcevla_data/inspect/inspect_processed_episode.py
+   Added the processed episode inspector CLI and the testable summary helper summarize_processed_episode(). The helper validates the processed episode first, then computes summary, action, wrench, and image-stream statistics.
 
-2. src/doosan_forcevla_data/validate/validate_processed_episode.py
-   Added processed episode validator and CLI.
+2. tests/test_inspect_processed_episode.py
+   Added unittest coverage for the inspector helper using a TemporaryDirectory, generated dummy raw episode, raw-to-processed conversion, and summary assertions.
 
-3. tests/test_raw_to_processed.py
-   Added unittest coverage for dummy raw generation, conversion, processed validation, frame dimensions, finite numeric values, terminal padding, nonzero translation action, and nonzero rotation action.
+3. docs/lerobot_export_plan.md
+   Replaced the short note with a concrete LeRobot / ForceVLA export mapping plan. This is a planning document only, not implementation.
 
-4. src/doosan_forcevla_data/validate/validate_raw_episode.py
-   Updated the raw validator so commanded_twist.csv is optional. If the file exists, it is still validated. This prevents the processed pipeline from indirectly requiring a teleoperation command stream.
+4. README.md
+   Added the processed inspection command and documented the planned export profiles: forcevla_13d first and doosan_full_25d later.
 
-5. README.md
-   Added a Current Pipeline Status section showing raw dummy episode generation, raw validation, conversion to processed JSONL, and processed validation. Also clarified that processed output is not yet LeRobot parquet and not yet ForceVLA training-ready.
-
-6. docs/lerobot_export_plan.md
-   Added short planning notes for future LeRobot export. It mentions that any4lerobot may be useful later as a reference, but should not be integrated yet.
-
-7. opencode_report.txt
+5. opencode_report.txt
    Updated this detailed report.
 
-New converter details
----------------------
+Processed inspector details
+---------------------------
 Module:
 
-src/doosan_forcevla_data/convert/raw_to_processed.py
-
-Primary function:
-
-convert_raw_to_processed(raw_episode_dir, output_dir) -> Path
+src/doosan_forcevla_data/inspect/inspect_processed_episode.py
 
 CLI:
 
-PYTHONPATH=src python3 -m doosan_forcevla_data.convert.raw_to_processed --raw data/raw_dummy/episode_000000 --output data/processed_dummy/episode_000000
+PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.inspect_processed_episode data/processed_dummy/episode_000000
 
-Converter behavior:
-1. Calls validate_raw_episode(raw_episode_dir) before conversion.
-2. Raises ValueError from the function if raw validation fails.
-3. CLI prints clear validation/conversion errors and exits nonzero on failure.
-4. Reads metadata.json.
-5. Reads robot/tcp_pose.csv.
-6. Reads robot/joint_states.csv.
-7. Reads force/wrench.csv.
-8. Does not read commanded_twist.csv for the learning action label.
-9. Aligns rows by frame index for v0.
-10. Does not implement advanced timestamp synchronization yet.
-11. Converts TCP quaternion xyzw to ee_axis_angle using the existing pure-Python quaternion-to-rotation-vector function.
-12. Builds model_state in the v0 processed schema order.
-13. Computes measured_action using compute_measured_tcp_delta_action.
-14. Writes terminal padding action [0, 0, 0, 0, 0, 0, 0] for the final frame.
-15. Writes action_is_terminal_padding=false for non-final frames.
-16. Writes action_is_terminal_padding=true for the final frame.
-17. Preserves image references as absolute paths to raw episode PPM image files.
-18. Does not copy images.
-19. Writes metadata_processed.json.
-20. Writes frames.jsonl.
+Public helper:
 
-Processed metadata fields
--------------------------
-metadata_processed.json includes:
+summarize_processed_episode(processed_episode_dir) -> dict[str, Any]
 
-1. source_raw_episode
-2. dataset_name
-3. robot_type
-4. fps
-5. quaternion_convention
-6. model_state_dim
-7. action_dim
-8. action_label_primary
-9. frame_count
-10. task_instruction
-11. geometry_type
-12. orientation_type
-13. collection_method
-14. success
-15. failure_reason
-16. notes
+Validation behavior:
+1. Calls validate_processed_episode before computing statistics.
+2. Raises ValueError from the helper if validation fails.
+3. CLI prints clear validation errors and exits nonzero if validation fails.
 
-Observed generated metadata from the manual run:
+Summary fields printed:
+1. episode path
+2. frame count
+3. fps
+4. duration seconds
+5. model_state_dim
+6. action_dim
+7. task_instruction
+8. geometry_type
+9. orientation_type
+10. collection_method
+11. success
 
-source_raw_episode: /home/horus/robotics_thesis/doosan_forcevla_data_tools/data/raw_dummy/episode_000000
-dataset_name: doosan_peg_in_hole_v0
-robot_type: doosan_m1013
-fps: 30
-quaternion_convention: xyzw
-model_state_dim: 25
-action_dim: 7
-action_label_primary: measured_tcp_delta
-frame_count: 20
-collection_method: dummy
-success: true
-notes: Simple v0 JSONL processed manifest; not yet LeRobot parquet export and not yet ForceVLA training-ready.
+Action statistics computed over non-terminal frames only:
+1. mean translation step norm
+2. max translation step norm
+3. mean rotation step norm
+4. max rotation step norm
+5. count of nonzero translation actions
+6. count of nonzero rotation actions
 
-Processed frame schema
-----------------------
-Each line in frames.jsonl is one JSON object with:
+Wrench statistics:
+The inspector reads wrench values from model_state indices 7 through 12. This matches the current model_state order:
 
-1. frame_index
-2. timestamp
-3. external_rgb_path
-4. tcp_rgb_path
-5. model_state
-6. measured_action
-7. action_is_terminal_padding
+ee_pos(3), ee_axis_angle(3), gripper(1), wrench(6), joint_pos(6), joint_vel(6)
 
-model_state layout
-------------------
-The converter builds model_state exactly in the order from processed_schema.MODEL_STATE_FIELDS:
+Printed wrench values:
+1. max absolute Fx
+2. max absolute Fy
+3. max absolute Fz
+4. max absolute Tx
+5. max absolute Ty
+6. max absolute Tz
+7. max force norm
+8. max torque norm
 
-1. ee_pos_x
-2. ee_pos_y
-3. ee_pos_z
-4. ee_axis_angle_x
-5. ee_axis_angle_y
-6. ee_axis_angle_z
-7. gripper_pos
-8. Fx
-9. Fy
-10. Fz
-11. Tx
-12. Ty
-13. Tz
-14. joint_pos_0
-15. joint_pos_1
-16. joint_pos_2
-17. joint_pos_3
-18. joint_pos_4
-19. joint_pos_5
-20. joint_vel_0
-21. joint_vel_1
-22. joint_vel_2
-23. joint_vel_3
-24. joint_vel_4
-25. joint_vel_5
+Image stream status:
+1. Count of existing external_rgb_path files.
+2. Count of existing tcp_rgb_path files.
 
-model_state length is checked to be exactly 25.
-
-measured_action layout
-----------------------
-The converter builds measured_action in this order:
-
-1. dx
-2. dy
-3. dz
-4. dRx
-5. dRy
-6. dRz
-7. gripper_delta_or_zero
-
-For frames 0 through N - 2:
-
-measured_action[t] = TCP delta from frame t to frame t + 1
-
-For the final frame:
-
-measured_action = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-action_is_terminal_padding = true
-
-measured_action length is checked to be exactly 7.
-
-Rotation handling
------------------
-The converter relies on the previously implemented quaternion utilities. TCP orientation is stored as xyzw. ee_axis_angle is produced by converting the absolute TCP quaternion to a rotation vector. measured_action rotation is produced by relative quaternion delta:
-
-q_rel = conjugate(q_t) * q_t1
-
-q_rel is then converted to a rotation vector.
-
-This remains pure Python and does not require numpy, scipy, ROS, transforms3d, or any other package.
-
-New processed validator details
--------------------------------
-Module:
-
-src/doosan_forcevla_data/validate/validate_processed_episode.py
-
-Primary function:
-
-validate_processed_episode(processed_episode_dir) -> ValidationResult
-
-CLI:
-
-PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_processed_episode data/processed_dummy/episode_000000
-
-Validation checks implemented:
-1. Processed episode directory exists.
-2. Processed episode path is a directory.
-3. metadata_processed.json exists.
-4. metadata_processed.json is valid JSON.
-5. metadata_processed.json is a JSON object.
-6. frames.jsonl exists.
-7. frames.jsonl has at least one line.
-8. Every JSONL line is a JSON object.
-9. metadata_processed.json contains required keys.
-10. metadata model_state_dim equals 25.
-11. metadata action_dim equals 7.
-12. metadata frame_count is an integer.
-13. metadata frame_count matches the number of JSONL frame lines.
-14. Each frame has required keys.
-15. frame_index matches the line index.
-16. timestamps are finite numbers.
-17. timestamps are strictly increasing.
-18. model_state is a list of length 25.
-19. measured_action is a list of length 7.
-20. all model_state values are finite numbers.
-21. all measured_action values are finite numbers.
-22. image paths exist.
-23. action_is_terminal_padding is boolean.
-24. exactly one frame has action_is_terminal_padding=true.
-25. the terminal padding frame is the final frame.
-26. final frame measured_action is all zeros.
-27. at least one non-final action has nonzero translation.
-28. at least one non-final action has nonzero rotation.
-
-Image path behavior
--------------------
-The converter stores image paths as absolute paths pointing back to the raw dummy episode image files. The processed validator accepts absolute paths directly. It can also resolve relative paths against the processed episode directory, and if needed against source_raw_episode from metadata.
-
-Raw validator change
---------------------
-Before this task, validate_raw_episode required actions/commanded_twist.csv. That made sense for the dummy raw episode but conflicted with the broader project principle that command streams must be optional.
-
-The raw validator now treats commanded_twist.csv as optional:
-
-1. If actions/commanded_twist.csv is absent, raw validation can still pass if required robot, wrench, event, metadata, and image fields are valid.
-2. If actions/commanded_twist.csv exists, its fields and timestamps are validated.
-
-This change is important because convert_raw_to_processed first calls validate_raw_episode. If the raw validator required commanded_twist.csv, then processed conversion would indirectly require a teleoperation stream, making hand-guided demonstrations invalid for v0 conversion.
-
-New test coverage
------------------
+Inspector test coverage
+-----------------------
 Test file:
 
-tests/test_raw_to_processed.py
+tests/test_inspect_processed_episode.py
 
-Test flow:
+The test does the following:
 1. Creates a TemporaryDirectory.
-2. Generates a dummy raw episode using make_dummy_raw_episode.
-3. Converts raw to processed using convert_raw_to_processed.
-4. Validates the processed episode using validate_processed_episode.
-5. Asserts metadata_processed.json exists.
-6. Asserts frames.jsonl exists.
-7. Asserts frame_count is 20.
-8. Asserts there are 20 frame records.
-9. Asserts every model_state has length 25.
-10. Asserts every measured_action has length 7.
-11. Asserts all model_state and measured_action values are finite.
-12. Asserts final frame action_is_terminal_padding is true.
-13. Asserts final frame measured_action is all zeros.
-14. Asserts at least one non-final action has nonzero translation.
-15. Asserts at least one non-final action has nonzero rotation.
+2. Generates a dummy raw episode.
+3. Converts it to processed JSONL.
+4. Calls summarize_processed_episode().
+5. Asserts frame_count is 20.
+6. Asserts action_dim is 7.
+7. Asserts model_state_dim is 25.
+8. Asserts max_translation_step_norm > 0.
+9. Asserts max_rotation_step_norm > 0.
+10. Asserts external_rgb file count is 20.
+11. Asserts tcp_rgb file count is 20.
 
-Verification results
---------------------
+Verification commands and results
+---------------------------------
 Command:
 
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 Result:
-Passed. Ran 8 tests. Result OK.
+Passed. Ran 9 tests. Result OK.
 
 Observed tests:
 1. test_invalid_input_sizes_raise_value_error ... ok
@@ -322,95 +143,162 @@ Observed tests:
 5. test_pure_z_rotation_90_degrees ... ok
 6. test_zero_motion_gives_all_zeros ... ok
 7. test_create_dummy_episode_and_validate_success ... ok
-8. test_convert_dummy_raw_episode_and_validate_processed ... ok
+8. test_summary_for_converted_dummy_episode ... ok
+9. test_convert_dummy_raw_episode_and_validate_processed ... ok
 
 Manual command 1:
 
 PYTHONPATH=src python3 -m doosan_forcevla_data.dummy.make_dummy_raw_episode --output data/raw_dummy/episode_000000
 
 Result:
-Passed. Output: Wrote dummy raw episode: data/raw_dummy/episode_000000
+Passed. Output:
+
+Wrote dummy raw episode: data/raw_dummy/episode_000000
 
 Manual command 2:
-
-PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_raw_episode data/raw_dummy/episode_000000
-
-Result:
-Passed. Output: OK: raw episode is valid: data/raw_dummy/episode_000000
-
-Manual command 3:
 
 PYTHONPATH=src python3 -m doosan_forcevla_data.convert.raw_to_processed --raw data/raw_dummy/episode_000000 --output data/processed_dummy/episode_000000
 
 Result:
-Passed. Output: OK: wrote processed episode: data/processed_dummy/episode_000000
+Passed. Output:
 
-Manual command 4:
+OK: wrote processed episode: data/processed_dummy/episode_000000
 
-PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_processed_episode data/processed_dummy/episode_000000
+Note: raw validation was not a separate requested manual command in this task, but convert_raw_to_processed calls validate_raw_episode internally before conversion.
+
+Manual command 3:
+
+PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.inspect_processed_episode data/processed_dummy/episode_000000
 
 Result:
-Passed. Output: OK: processed episode is valid: data/processed_dummy/episode_000000
+Passed. The inspector internally validated the processed episode before printing statistics.
 
-Generated ignored data
-----------------------
-The manual run created or refreshed:
+Inspector output summary
+------------------------
+The inspector printed:
 
-data/raw_dummy/episode_000000/
-data/processed_dummy/episode_000000/
+frame count: 20
+fps: 30
+duration seconds: 0.666666667
+model_state_dim: 25
+action_dim: 7
+task_instruction: Insert the peg into the hole.
+geometry_type: round_peg_round_hole
+orientation_type: vertical_insertion
+collection_method: dummy
+success: True
 
-These paths are ignored by .gitignore. Python __pycache__ directories were also created by test and CLI execution and are ignored.
+Action statistics over non-terminal frames:
 
-Current git status summary
---------------------------
-Modified tracked files:
-1. README.md
-2. src/doosan_forcevla_data/validate/validate_raw_episode.py
+mean translation step norm: 0.00287417297
+max translation step norm: 0.00310392399
+mean rotation step norm: 0.00421052629
+max rotation step norm: 0.00421052747
+nonzero translation actions: 19
+nonzero rotation actions: 19
 
-New untracked files/directories:
-1. docs/lerobot_export_plan.md
-2. src/doosan_forcevla_data/convert/raw_to_processed.py
-3. src/doosan_forcevla_data/validate/validate_processed_episode.py
-4. tests/test_raw_to_processed.py
+Wrench statistics:
 
-Ignored generated files/directories:
-1. data/
-2. Python __pycache__ directories
+max abs Fx: 0.199316899
+max abs Fy: 0
+max abs Fz: 12
+max abs Tx: 0
+max abs Ty: 0.03
+max abs Tz: 0
+max force norm: 12
+max torque norm: 0.03
+
+Image stream status:
+
+external_rgb_path files existing: 20 / 20
+
+Updated export-plan decisions
+-----------------------------
+The concrete mapping document is now:
+
+docs/lerobot_export_plan.md
+
+It defines the current internal processed format:
+1. metadata_processed.json
+2. frames.jsonl
+3. model_state 25D
+4. measured_action 7D
+5. image references
+
+Export profile A: forcevla_13d
+Purpose:
+First compatibility target for official ForceVLA / tshiamor-like loading.
+
+Mapping:
+1. observation.image = external_rgb
+2. observation.wrist_image = tcp_rgb
+3. optional missing third camera = zero-filled later by ForceVLA transform or export profile
+4. observation.state = 13D: ee_pos(3) + ee_axis_angle(3) + gripper_pos(1) + wrench(6)
+5. action = measured_action 7D
+6. task = task_instruction
+7. final terminal-padded frame excluded from training/export by default
+
+Export profile B: doosan_full_25d
+Purpose:
+Future full-proprioception experiments.
+
+Mapping:
+1. observation.image = external_rgb
+2. observation.wrist_image = tcp_rgb
+3. observation.state = full 25D model_state
+4. action = measured_action 7D
+5. task = task_instruction
+6. final terminal-padded frame excluded from training/export by default
+
+Image handling decision:
+1. Current processed JSONL stores image references only.
+2. Future export should either copy images into export staging before video encoding, or encode videos directly from referenced raw images.
+3. Implementation choice is intentionally deferred.
+
+any4lerobot decision:
+1. Use only as a reference for LeRobot metadata and version conventions.
+2. Do not clone, vendor, import, or integrate it until this repository's export mapping is stable.
+
+Next implementation after this planning step:
+Implement a dry-run export manifest generator, not parquet. It should report planned LeRobot keys, dimensions, selected profile, frame inclusion/exclusion, and image availability without writing videos or parquet files.
+
+README update
+-------------
+README.md now includes:
+1. The processed episode inspector command.
+2. A note that forcevla_13d is the next planned export target.
+3. A note that doosan_full_25d is reserved for future full-proprioception experiments.
 
 Known limitations
 -----------------
-1. The converter aligns raw streams by frame index only.
-2. Advanced timestamp synchronization is not implemented yet.
-3. Images are referenced by path and are not copied into the processed episode.
-4. Image decoding, shape validation, camera calibration, and camera synchronization are not implemented.
-5. The processed format is JSONL for inspection and validation, not a final training storage format.
-6. No LeRobot parquet export is implemented yet.
-7. No Hugging Face integration is implemented.
-8. No ForceVLA training code is implemented.
-9. No ROS recorder is implemented.
-10. No any4lerobot integration is implemented.
-11. The validator checks structural and numeric properties but does not validate manipulation semantics.
-12. The wrench frame and sign convention remain as-recorded and should be made explicit for real robot data.
-13. The final frame action uses terminal zero padding, which is valid for this v0 manifest but should be revisited when choosing final training/export format conventions.
-14. Commands still require PYTHONPATH=src unless the package is installed later by the user.
+1. No ROS recorder is implemented.
+2. No LeRobot parquet export is implemented.
+3. No Hugging Face integration is implemented.
+4. No any4lerobot integration is implemented.
+5. No package installation was performed.
+6. The inspector is read-only and does not generate plots.
+7. The inspector assumes the current v0 model_state layout for wrench indices 7 through 12.
+8. The current processed format stores image path references and does not copy or encode images.
+9. The converter still aligns streams by frame index only.
+10. Advanced timestamp synchronization is not implemented.
+11. The export plan is a mapping decision document only, not executable export code.
+12. The final terminal-padded frame policy is planned as exclude-by-default for future export, but no export code implements that yet.
 
 Exact next recommended task
 ---------------------------
-Plan the LeRobot export mapping from the validated v0 processed JSONL manifest before implementing parquet export.
+Implement a dry-run export manifest generator for the planned export profiles.
 
-Recommended scope for that planning task:
-1. Decide episode-level metadata mapping.
-2. Decide observation key names for external_rgb, tcp_rgb, model_state, ee_pos, ee_quat, wrench, joint_pos, and joint_vel.
-3. Decide action key naming for measured_action.
-4. Decide how terminal padded action frames should be represented or excluded.
-5. Decide whether image paths are copied, symlinked, or encoded during export.
-6. Decide train/validation split metadata conventions.
-7. Keep any4lerobot as a reference only, with no integration until the mapping is stable.
+Recommended scope:
+1. Add a module such as src/doosan_forcevla_data/convert/plan_lerobot_export.py.
+2. Accept a processed episode directory and an export profile name, starting with forcevla_13d.
+3. Validate the processed episode first.
+4. Exclude the final terminal-padded frame by default.
+5. Print or write a small JSON manifest describing planned keys and dimensions.
+6. For forcevla_13d, verify observation.state length 13 and action length 7.
+7. For doosan_full_25d, verify observation.state length 25 and action length 7.
+8. Verify image references exist.
+9. Do not write parquet, encode videos, use Hugging Face, install dependencies, or integrate any4lerobot.
 
 Bottom line
 -----------
-The repository now has a complete small v0 pipeline:
-
-raw dummy episode -> validate raw -> convert to processed JSONL -> validate processed
-
-The processed records contain fixed-shape 25-dimensional model_state vectors, 7-dimensional measured TCP delta action labels, terminal action padding, timestamps, and image references. This gives a safe foundation for future LeRobot export planning without coupling the dataset to a teleoperation method.
+The repository now has a complete small v0 inspection loop for processed JSONL episodes and a concrete, non-executable export mapping plan. The next safe implementation step is a dry-run manifest generator before any LeRobot parquet export work.

@@ -1,0 +1,104 @@
+# Human-readable v0 dataset contract for Doosan M1013 peg-in-hole data.
+dataset_name: doosan_peg_in_hole_v0
+robot_type: doosan_m1013
+fps: 30
+
+camera_streams:
+  external_rgb:
+    role: fixed external RGB camera
+    required: true
+  tcp_rgb:
+    role: TCP or wrist-mounted RGB camera
+    required: true
+  aux_rgb:
+    role: optional future auxiliary RGB stream
+    required: false
+
+state_fields:
+  ee_pos:
+    shape: 3
+    frame: base
+    units: meters
+    order: [x, y, z]
+  ee_quat:
+    shape: 4
+    convention: xyzw
+    order: [qx, qy, qz, qw]
+  gripper_pos:
+    shape: 1
+    units: normalized_or_device_native
+  wrench:
+    shape: 6
+    frame: sensor_or_tool_frame_as_recorded
+    order: [Fx, Fy, Fz, Tx, Ty, Tz]
+  joint_pos:
+    shape: 6
+    units: radians
+    order: [joint_0, joint_1, joint_2, joint_3, joint_4, joint_5]
+  joint_vel:
+    shape: 6
+    units: radians_per_second
+    order: [joint_0, joint_1, joint_2, joint_3, joint_4, joint_5]
+
+model_state:
+  shape: 25
+  layout:
+    - name: ee_pos
+      shape: 3
+      order: [x, y, z]
+    - name: ee_axis_angle
+      shape: 3
+      order: [rx, ry, rz]
+    - name: gripper_pos
+      shape: 1
+      order: [gripper]
+    - name: wrench
+      shape: 6
+      order: [Fx, Fy, Fz, Tx, Ty, Tz]
+    - name: joint_pos
+      shape: 6
+      order: [joint_0, joint_1, joint_2, joint_3, joint_4, joint_5]
+    - name: joint_vel
+      shape: 6
+      order: [joint_0, joint_1, joint_2, joint_3, joint_4, joint_5]
+
+action:
+  primary: measured_tcp_delta
+  shape: 7
+  layout:
+    - dx
+    - dy
+    - dz
+    - dRx
+    - dRy
+    - dRz
+    - gripper_delta_or_zero
+  rotation_convention:
+    quaternion_convention: xyzw
+    relative_quaternion: q_rel = conjugate(q_t) * q_t1
+    representation: rotation_vector
+
+supported_action_sources:
+  - measured_tcp_delta
+  - commanded_twist_optional
+  - predicted_action_optional
+
+task_metadata_fields:
+  task_instruction:
+    required: true
+    example: Insert the peg into the hole.
+  geometry_type:
+    required: true
+    example: round_peg_round_hole
+  orientation_type:
+    required: true
+    example: vertical_insertion
+  collection_method:
+    required: true
+    examples: [hand_guided, keyboard_teleop, spacemouse, vr_controller, dummy]
+  success:
+    required: true
+    type: boolean
+  failure_reason:
+    required: true
+    nullable: true

@@ -164,9 +164,6 @@ def validate_processed_episode(processed_episode_dir: str | Path) -> ValidationR
 
     previous_timestamp: float | None = None
     padding_indices: list[int] = []
-    has_nonzero_translation = False
-    has_nonzero_rotation = False
-
     for idx, frame in enumerate(frames):
         missing_frame_keys = [key for key in REQUIRED_FRAME_KEYS if key not in frame]
         if missing_frame_keys:
@@ -187,14 +184,6 @@ def validate_processed_episode(processed_episode_dir: str | Path) -> ValidationR
 
         _check_numeric_vector(idx, frame, "model_state", MODEL_STATE_DIM, errors)
         _check_numeric_vector(idx, frame, "measured_action", ACTION_DIM, errors)
-
-        action = frame.get("measured_action")
-        if isinstance(action, list) and len(action) == ACTION_DIM and all(_is_finite_number(v) for v in action):
-            if idx < len(frames) - 1:
-                if any(abs(float(value)) > 1e-12 for value in action[:3]):
-                    has_nonzero_translation = True
-                if any(abs(float(value)) > 1e-12 for value in action[3:6]):
-                    has_nonzero_rotation = True
 
         padding = frame.get("action_is_terminal_padding")
         if not isinstance(padding, bool):
@@ -226,11 +215,6 @@ def validate_processed_episode(processed_episode_dir: str | Path) -> ValidationR
             and all(_is_finite_number(value) and abs(float(value)) <= 1e-12 for value in final_action)
         ):
             errors.append("final frame: measured_action must be all zeros")
-
-    if not has_nonzero_translation:
-        errors.append("frames.jsonl: expected at least one non-final action with nonzero translation")
-    if not has_nonzero_rotation:
-        errors.append("frames.jsonl: expected at least one non-final action with nonzero rotation")
 
     return ValidationResult(not errors, errors)
 

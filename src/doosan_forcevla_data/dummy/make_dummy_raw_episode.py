@@ -73,6 +73,9 @@ def make_dummy_raw_episode(
     joint_rows: list[dict[str, object]] = []
     wrench_rows: list[dict[str, object]] = []
     action_rows: list[dict[str, object]] = []
+    total_joint_delta = 0.02
+    timestamp_span = (frame_count - 1) / fps
+    joint_velocity = total_joint_delta / timestamp_span if timestamp_span > 0.0 else 0.0
 
     for idx in range(frame_count):
         timestamp = idx / fps
@@ -101,8 +104,8 @@ def make_dummy_raw_episode(
 
         joint_row: dict[str, object] = {"timestamp": f"{timestamp:.9f}"}
         for joint_idx in range(6):
-            joint_row[f"joint_pos_{joint_idx}"] = f"{0.1 * joint_idx + 0.02 * fraction:.9f}"
-            joint_row[f"joint_vel_{joint_idx}"] = f"{0.02 / (frame_count / fps):.9f}"
+            joint_row[f"joint_pos_{joint_idx}"] = f"{0.1 * joint_idx + total_joint_delta * fraction:.9f}"
+            joint_row[f"joint_vel_{joint_idx}"] = f"{joint_velocity:.9f}"
         joint_rows.append(joint_row)
 
         contact_fraction = max(0.0, (fraction - 0.70) / 0.30)

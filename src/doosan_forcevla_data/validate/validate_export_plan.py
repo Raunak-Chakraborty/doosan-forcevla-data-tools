@@ -102,15 +102,30 @@ def validate_export_plan(path: str | Path) -> ValidationResult:
         errors.append(f"{manifest_path}: input_frame_count must be an integer")
     if isinstance(excluded_count, bool) or not isinstance(excluded_count, int):
         errors.append(f"{manifest_path}: excluded_terminal_padding_frame_count must be an integer")
-    elif excluded_count != 1:
-        errors.append(f"{manifest_path}: excluded_terminal_padding_frame_count must be 1")
+    elif excluded_count < 0:
+        errors.append(f"{manifest_path}: excluded_terminal_padding_frame_count must be >= 0")
+
+    if (
+        isinstance(input_frame_count, int)
+        and not isinstance(input_frame_count, bool)
+        and isinstance(exported_frame_count, int)
+        and not isinstance(exported_frame_count, bool)
+        and isinstance(excluded_count, int)
+        and not isinstance(excluded_count, bool)
+    ):
+        expected_excluded = input_frame_count - exported_frame_count
+        if excluded_count != expected_excluded:
+            errors.append(
+                f"{manifest_path}: excluded_terminal_padding_frame_count must equal "
+                f"input_frame_count - exported_frame_count ({expected_excluded})"
+            )
 
     if manifest.get("terminal_padding_excluded") is not True:
         errors.append(f"{manifest_path}: terminal_padding_excluded must be true")
     elif isinstance(input_frame_count, int) and isinstance(exported_frame_count, int):
-        if input_frame_count <= exported_frame_count:
+        if input_frame_count < exported_frame_count:
             errors.append(
-                f"{manifest_path}: input_frame_count must be greater than exported_frame_count when terminal padding is excluded"
+                f"{manifest_path}: input_frame_count must be >= exported_frame_count when terminal padding is excluded"
             )
 
     lerobot_like_keys = manifest.get("lerobot_like_keys")

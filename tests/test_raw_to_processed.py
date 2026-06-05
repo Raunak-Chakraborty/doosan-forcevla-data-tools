@@ -57,6 +57,27 @@ class RawToProcessedTests(unittest.TestCase):
             self.assertTrue(has_nonzero_translation)
             self.assertTrue(has_nonzero_rotation)
 
+    def test_processed_validator_accepts_zero_rotation_actions(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+
+            make_dummy_raw_episode(raw_episode)
+            convert_raw_to_processed(raw_episode, processed_episode)
+
+            frames_path = processed_episode / "frames.jsonl"
+            frames = [json.loads(line) for line in frames_path.read_text(encoding="utf-8").splitlines()]
+            for frame in frames[:-1]:
+                frame["measured_action"][3:6] = [0.0, 0.0, 0.0]
+            frames_path.write_text(
+                "".join(json.dumps(frame, separators=(",", ":")) + "\n" for frame in frames),
+                encoding="utf-8",
+            )
+
+            result = validate_processed_episode(processed_episode)
+            self.assertTrue(result.ok, result.errors)
+
 
 if __name__ == "__main__":
     unittest.main()

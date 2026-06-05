@@ -170,6 +170,8 @@ def validate_raw_episode(episode_dir: str | Path) -> ValidationResult:
         _check_required_fields(path, fieldnames, required_fields, errors)
         _check_increasing_timestamps(path, rows, errors)
         numeric_fields = [field for field in required_fields if field != "event"]
+        if relative_path == RAW_EPISODE_PATHS.tcp_pose and "gripper_pos" in fieldnames:
+            numeric_fields.append("gripper_pos")
         _check_numeric_fields(path, rows, numeric_fields, errors)
 
     return ValidationResult(not errors, errors)

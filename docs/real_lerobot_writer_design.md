@@ -7,7 +7,7 @@ This document defines the first real LeRobot-compatible writer design for the Do
 The current offline pipeline is:
 
 ```text
-raw episode -> processed JSONL -> export plan -> staged export JSONL -> local LeRobot skeleton
+raw episode -> processed JSONL -> export plan -> staged export JSONL -> local LeRobot skeleton -> real-export preflight
 ```
 
 Current stages:
@@ -17,6 +17,7 @@ Current stages:
 - Export plan: dry-run JSON manifest that chooses an export profile and verifies dimensions, keys, image availability, and terminal-frame exclusion.
 - Staged export JSONL: inspectable records with future-facing keys such as `observation.image`, `observation.wrist_image`, `observation.state`, `action`, and `task`.
 - Local LeRobot skeleton: v2.1-style metadata, JSONL placeholder records, and controlled `image_staging/` with symlink or copy mode.
+- Real-export preflight: read-only readiness report for skeleton schema, prompt/task compatibility, image staging, and parquet/video dependencies.
 
 The staged export is useful for checking record shape before committing to a parquet/video writer, but it is not training-ready LeRobot data.
 
@@ -208,7 +209,9 @@ Recommended dependency workflow:
 
 - First check what is already installed on the laptop.
 - Run `PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.check_export_dependencies` without installing anything.
+- Run `PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.preflight_real_export <skeleton_dir>` on a validated skeleton.
 - Repeat the same dependency check on the lab workstation inside the validated ForceVLA environment.
+- Repeat the same real-export preflight on the lab workstation inside the validated ForceVLA environment.
 - Treat missing laptop dependencies as informational, not final blockers.
 - Prefer LeRobot's official dataset creation utilities if available and compatible with the selected v2.1-style layout.
 - If official utilities are unavailable or incompatible, write minimal parquet/video manually only after confirming the exact required schema.
@@ -324,21 +327,21 @@ Concrete open questions:
 
 Next coding task:
 
-Implement a real-export preflight command that reads a skeleton export, checks dependencies, verifies metadata/schema choices, and reports whether parquet/video writing is possible without writing parquet or videos.
+Run the real-export preflight on the lab workstation inside the validated ForceVLA environment, then use its results to choose the first real parquet/video writer path.
 
-The preflight should check:
+The lab preflight should check:
 
 - skeleton metadata and JSONL schema
 - `task` and `prompt` compatibility fields
 - image staging completeness
 - dependency availability for parquet and video writing
 
-The preflight should:
+The next implementation should:
 
 - Preserve `forcevla_13d` as the first profile.
 - Keep `doosan_full_25d` as secondary.
-- Report missing laptop dependencies as informational.
-- Remind the user to run the same check on the lab ForceVLA environment.
+- Treat laptop dependency results as informational.
+- Use lab ForceVLA preflight results as the compatibility source of truth.
 - Avoid parquet and videos until dependencies and LeRobot schema are confirmed.
 
 Do not implement:

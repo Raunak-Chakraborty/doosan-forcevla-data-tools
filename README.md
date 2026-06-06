@@ -54,6 +54,7 @@ This repository currently provides:
 - a staged JSONL export dry run for planned profiles
 - a local LeRobot-style skeleton writer with JSONL placeholder records and staged image references
 - a dependency preflight CLI for future real parquet/video export
+- a real-export preflight CLI that checks skeleton schema, image staging, prompt/task compatibility, and dependency readiness
 - standard-library `unittest` tests
 
 ## Current Pipeline Status
@@ -61,7 +62,7 @@ This repository currently provides:
 The current v0 pipeline is:
 
 ```text
-raw dummy episode -> validate raw -> convert to processed -> validate processed -> inspect processed -> plan dry-run export -> validate export plan -> stage export JSONL -> validate staged export -> write LeRobot skeleton -> validate LeRobot skeleton
+raw dummy episode -> validate raw -> convert to processed -> validate processed -> inspect processed -> plan dry-run export -> validate export plan -> stage export JSONL -> validate staged export -> write LeRobot skeleton -> validate LeRobot skeleton -> preflight real export
 ```
 
 Example commands:
@@ -151,6 +152,22 @@ PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.check_export_dependencies
 
 This command checks Python, `pyarrow`, `pandas`, `lerobot`, `cv2`, `imageio`, `PIL`, and `ffmpeg`. Missing laptop dependencies are not final blockers because real ForceVLA compatibility must be validated later on the lab workstation inside the validated ForceVLA environment. Run the same command on both the laptop and the lab workstation.
 
+## Real Export Preflight
+
+Check whether a skeleton export is structurally ready for future parquet/video work:
+
+```bash
+PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.preflight_real_export data/lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0
+```
+
+Optionally write the preflight report as JSON:
+
+```bash
+PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.preflight_real_export data/lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0 --output data/lerobot_dummy/forcevla_13d/preflight_report.json
+```
+
+The preflight validates the skeleton, checks schema and prompt/task compatibility, counts staged images, checks dependency availability, and reports parquet/video readiness. It does not write parquet or videos. Run it on the laptop for local awareness, then run it again on the lab workstation inside the validated ForceVLA environment.
+
 ## Real LeRobot Writer Design
 
 The first real writer design is documented in `docs/real_lerobot_writer_design.md`. The concrete schema decision before real parquet/video work is documented in `docs/real_lerobot_schema_decision.md`. The first target remains `forcevla_13d`, with `doosan_full_25d` kept as a secondary full-proprioception target.
@@ -167,6 +184,7 @@ The first real writer design is documented in `docs/real_lerobot_writer_design.m
 - The export planner writes a small JSON dry-run manifest only; it does not create LeRobot parquet or videos.
 - The staged export writes inspectable JSONL records only; it still does not create training-ready LeRobot data.
 - The LeRobot skeleton writer creates v2.1-style folders, JSONL placeholder records, and staged images only; it still does not write parquet or encode videos.
+- The real-export preflight checks readiness only; it does not write parquet or videos.
 - Laptop dependency availability is informative only; real ForceVLA loader and training compatibility must be checked on the lab workstation.
 
 ## Example Commands
@@ -191,6 +209,7 @@ PYTHONPATH=src python3 -m doosan_forcevla_data.convert.stage_lerobot_export --pr
 PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_staged_export data/staged_dummy/doosan_full_25d/episode_000000
 PYTHONPATH=src python3 -m doosan_forcevla_data.convert.write_lerobot_skeleton --staged data/staged_dummy/forcevla_13d/episode_000000 --output data/lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0 --episode-index 0 --task-index 0 --profile forcevla_13d --image-mode symlink --overwrite
 PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_lerobot_skeleton data/lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0
+PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.preflight_real_export data/lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0 --output data/lerobot_dummy/forcevla_13d/preflight_report.json
 PYTHONPATH=src python3 -m doosan_forcevla_data.convert.write_lerobot_skeleton --staged data/staged_dummy/doosan_full_25d/episode_000000 --output data/lerobot_dummy/doosan_full_25d/doosan_peg_in_hole_v0 --episode-index 0 --task-index 0 --profile doosan_full_25d --image-mode copy --overwrite
 PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_lerobot_skeleton data/lerobot_dummy/doosan_full_25d/doosan_peg_in_hole_v0
 ```

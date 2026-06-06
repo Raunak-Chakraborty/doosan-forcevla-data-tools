@@ -168,11 +168,32 @@ Open questions:
 - Should parquet contain image/video reference struct columns or omit image columns and rely on `info.json` video metadata?
 - Are `pyarrow`, `imageio`, `ffmpeg`, and `lerobot` available on the lab workstation ForceVLA environment?
 
-## 12. Next Coding Step After This Document
+## 12. Real Export Preflight
+
+The real-export preflight command reads a local skeleton export and reports whether it is structurally ready for the next real-export step.
+
+It checks:
+
+- skeleton validity through `validate_lerobot_skeleton`
+- dependency availability through `check_export_dependencies`
+- export profile and state/action dimensions
+- `task` and `prompt` feature presence
+- `prompt == task` for each frame
+- absence of terminal padding fields
+- frame-count consistency across metadata and JSONL rows
+- staged image path existence under the skeleton root
+- symlink versus regular-file image counts
+- metadata flags such as `skeleton_only`, `parquet_written`, and `videos_encoded`
+
+It reports readiness fields for parquet writing, video writing, LeRobot API availability, real export readiness, and video export readiness. It still does not write parquet, encode videos, import LeRobot APIs, upload to Hugging Face, install packages, integrate any4lerobot, or add ROS.
+
+The command should be run once on the laptop for local awareness and again on the lab workstation inside the validated ForceVLA environment. Missing laptop dependencies are not final blockers.
+
+## 13. Next Coding Step After This Document
 
 Recommended next coding task:
 
-Implement a real-export preflight command that:
+After the preflight command is stable, implement a no-write real-export planning command or extend the preflight to compare the skeleton against the exact lab ForceVLA/LeRobot loader expectations. That next step should:
 
 - reads a skeleton export
 - checks dependencies

@@ -7,5 +7,6 @@ data/raw_dummy/
 data/processed_dummy/
 data/staged_dummy/
 data/lerobot_dummy/
+data/real_lerobot_dummy/
 *.egg-info/
 .pytest_cache/

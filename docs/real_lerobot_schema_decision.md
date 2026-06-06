@@ -189,11 +189,49 @@ It reports readiness fields for parquet writing, video writing, LeRobot API avai
 
 The command should be run once on the laptop for local awareness and again on the lab workstation inside the validated ForceVLA environment. Missing laptop dependencies are not final blockers.
 
-## 13. Next Coding Step After This Document
+## 13. Dependency-Optional Real Export Writer Scaffold
+
+The dependency-optional writer scaffold reads a validated local skeleton export and attempts a local real-export directory without installing packages or requiring laptop dependencies to match the lab environment.
+
+Modes:
+
+- `dry-run`: writes only `export_attempt_report.json` and does not write metadata, parquet, videos, or copied images.
+- `write-if-available`: writes adapted metadata, writes parquet only if `pyarrow` is importable, and attempts MP4 videos only if video dependencies are available.
+
+The scaffold writes a report with:
+
+- source skeleton
+- output directory
+- profile and dimensions
+- dependency summary
+- parquet/video readiness
+- parquet_written
+- videos_written
+- metadata_written
+- skipped reasons
+- next recommended action
+
+Parquet behavior:
+
+- Uses `pyarrow` directly if available.
+- Does not require pandas.
+- Writes only tabular columns: `observation.state`, `action`, `timestamp`, `frame_index`, `episode_index`, `task_index`, `index`, `task`, and `prompt`.
+- Does not embed image data and does not include image columns yet.
+
+Video behavior:
+
+- Encodes from the controlled `image_staging/` tree only.
+- Prefers `imageio` if available.
+- Falls back to `cv2.VideoWriter` if `imageio` is unavailable and `cv2` is available.
+- Skips videos with a clear report reason if encoding dependencies are missing or dummy images cannot be encoded cleanly.
+
+This scaffold is not final success until the same command is run and validated on the lab workstation inside the ForceVLA environment. Laptop skipped dependencies are expected and should not block code development.
+
+## 14. Next Coding Step After This Document
 
 Recommended next coding task:
 
-After the preflight command is stable, implement a no-write real-export planning command or extend the preflight to compare the skeleton against the exact lab ForceVLA/LeRobot loader expectations. That next step should:
+After the dependency-optional writer scaffold is stable, run it on the lab ForceVLA workstation and compare its output against the actual ForceVLA/LeRobot loader expectations. That next step should:
 
 - reads a skeleton export
 - checks dependencies

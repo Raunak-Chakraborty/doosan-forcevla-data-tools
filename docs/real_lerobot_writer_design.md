@@ -7,7 +7,7 @@ This document defines the first real LeRobot-compatible writer design for the Do
 The current offline pipeline is:
 
 ```text
-raw episode -> processed JSONL -> export plan -> staged export JSONL -> local LeRobot skeleton -> real-export preflight
+raw episode -> processed JSONL -> export plan -> staged export JSONL -> local LeRobot skeleton -> real-export preflight -> dependency-optional real-export attempt
 ```
 
 Current stages:
@@ -18,6 +18,7 @@ Current stages:
 - Staged export JSONL: inspectable records with future-facing keys such as `observation.image`, `observation.wrist_image`, `observation.state`, `action`, and `task`.
 - Local LeRobot skeleton: v2.1-style metadata, JSONL placeholder records, and controlled `image_staging/` with symlink or copy mode.
 - Real-export preflight: read-only readiness report for skeleton schema, prompt/task compatibility, image staging, and parquet/video dependencies.
+- Dependency-optional real-export attempt: local-only scaffold that writes an export attempt report, writes metadata in `write-if-available` mode, and writes parquet/videos only when dependencies are present.
 
 The staged export is useful for checking record shape before committing to a parquet/video writer, but it is not training-ready LeRobot data.
 
@@ -210,8 +211,11 @@ Recommended dependency workflow:
 - First check what is already installed on the laptop.
 - Run `PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.check_export_dependencies` without installing anything.
 - Run `PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.preflight_real_export <skeleton_dir>` on a validated skeleton.
+- Run `PYTHONPATH=src python3 -m doosan_forcevla_data.convert.write_real_lerobot_export --skeleton <skeleton_dir> --output <output_dir> --mode dry-run` to inspect what would be attempted.
+- Run `--mode write-if-available` only when a local attempt should write metadata and dependency-available artifacts.
 - Repeat the same dependency check on the lab workstation inside the validated ForceVLA environment.
 - Repeat the same real-export preflight on the lab workstation inside the validated ForceVLA environment.
+- Repeat the same real-export attempt on the lab workstation before treating parquet/video compatibility as valid.
 - Treat missing laptop dependencies as informational, not final blockers.
 - Prefer LeRobot's official dataset creation utilities if available and compatible with the selected v2.1-style layout.
 - If official utilities are unavailable or incompatible, write minimal parquet/video manually only after confirming the exact required schema.
@@ -327,7 +331,7 @@ Concrete open questions:
 
 Next coding task:
 
-Run the real-export preflight on the lab workstation inside the validated ForceVLA environment, then use its results to choose the first real parquet/video writer path.
+Run the dependency check, real-export preflight, and dependency-optional real-export attempt on the lab workstation inside the validated ForceVLA environment. Use those lab results to decide whether to harden the pyarrow writer, switch to LeRobot APIs, or adjust video encoding.
 
 The lab preflight should check:
 

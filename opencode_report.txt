@@ -1,240 +1,171 @@
-Doosan ForceVLA Data Tools Robustness Cleanup Report
-====================================================
+Doosan ForceVLA Data Tools Local LeRobot Skeleton Writer Report
+===============================================================
 
 Repository
 ----------
 Path: /home/horus/robotics_thesis/doosan_forcevla_data_tools
 Project context: Doosan M1013 peg-in-hole dataset preparation for ForceVLA/tshiamor-style imitation learning.
 
-Current offline pipeline
-------------------------
-raw dummy episode -> validate raw -> convert to processed JSONL -> validate processed -> inspect processed -> plan dry-run export -> validate export plan -> stage export JSONL -> validate staged export
+Task summary
+------------
+Implemented the first local LeRobot-style skeleton writer. The writer consumes a validated staged export, creates v2.1-style metadata folders, writes JSONL placeholder frame records in the future LeRobot-like data path, and stages image files into a controlled output tree by symlink or copy. No parquet was written. No videos were encoded. No packages were installed. No Hugging Face, ROS, LeRobot API, or any4lerobot integration was added.
 
-Core design preserved
----------------------
-1. Primary action label remains measured TCP delta from robot state.
-2. No commanded action stream is required.
-3. The dataset remains independent of hand-guiding, teleop, SpaceMouse, VR controller, or future policy shadow-mode collection.
-4. Staged frame keys remain unchanged: frame_index, timestamp, observation.image, observation.wrist_image, observation.state, action, task.
-5. Export profiles remain unchanged: forcevla_13d and doosan_full_25d.
+Files created/modified
+----------------------
+1. src/doosan_forcevla_data/convert/write_lerobot_skeleton.py
+   Created the local LeRobot-style skeleton writer CLI and library function.
 
-Constraints followed
+2. src/doosan_forcevla_data/validate/validate_lerobot_skeleton.py
+   Created the skeleton export validator CLI and library function.
+
+3. tests/test_write_lerobot_skeleton.py
+   Added unittest coverage for forcevla_13d symlink mode and doosan_full_25d copy mode.
+
+4. README.md
+   Added skeleton writer commands, validator commands, scope notes, and limitations.
+
+5. docs/lerobot_export_plan.md
+   Added the skeleton writer as the step after staged export and before real parquet/video export.
+
+6. docs/real_lerobot_writer_design.md
+   Added a Local LeRobot Skeleton Writer section.
+
+7. .gitignore
+   Added data/lerobot_dummy/ so generated skeleton exports are ignored like other dummy artifacts.
+
+8. opencode_report.txt
+   Updated this report with implementation details, verification results, skeleton summaries, limitations, and next step.
+
+Implemented behavior
 --------------------
-1. No ROS recorder was implemented.
-2. No real LeRobot parquet export was implemented.
-3. No videos were encoded.
-4. No packages were installed.
-5. No Hugging Face integration was added.
-6. No any4lerobot integration was added.
-7. Only the Python standard library is used.
-8. No files outside this repository were modified.
-9. No zip snapshot was created in this task.
-10. No commit was made automatically.
+1. The default profile is forcevla_13d.
+2. The secondary doosan_full_25d profile is supported by the same writer and validator framework.
+3. The writer validates staged exports first with validate_staged_export.
+4. The writer requires the CLI/profile argument to match metadata_staged.json profile.
+5. The writer creates:
+   output/meta/info.json
+   output/meta/tasks.jsonl
+   output/meta/episodes.jsonl
+   output/meta/episodes_stats.jsonl
+   output/data/chunk-000/episode_000000.jsonl
+   output/image_staging/observation.image/episode_000000/
+   output/image_staging/observation.wrist_image/episode_000000/
+6. Frame records use future-facing keys:
+   observation.image
+   observation.wrist_image
+   observation.state
+   action
+   timestamp
+   frame_index
+   episode_index
+   task_index
+   index
+   task
+7. observation.image and observation.wrist_image are relative paths to staged files under the skeleton output.
+8. image-mode symlink creates absolute-target symlinks and fails clearly if symlink creation fails.
+9. image-mode copy uses shutil.copy2.
+10. Existing staged image targets are replaced if they are files or symlinks, and rejected if they are directories.
+11. Terminal padding fields are not included in skeleton frame records.
+12. info.json records skeleton_only true, parquet_written false, videos_encoded false, image_mode, and terminal_padding_excluded true.
 
-Files modified in this cleanup pass
------------------------------------
-1. src/doosan_forcevla_data/validate/validate_processed_episode.py
-   Relaxed generic processed validation so structurally valid episodes no longer fail only because all non-final translation or rotation actions are zero.
+forcevla_13d skeleton summary
+-----------------------------
+Manual output path:
+data/lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0
 
-2. src/doosan_forcevla_data/validate/validate_export_plan.py
-   Removed the hardcoded excluded_terminal_padding_frame_count == 1 assumption. The validator now checks excluded_terminal_padding_frame_count == input_frame_count - exported_frame_count and requires the excluded count to be non-negative.
+Summary:
+1. profile: forcevla_13d
+2. image mode: symlink
+3. total frames: 19
+4. observation.state shape: [13]
+5. action shape: [7]
+6. terminal-padded final frame excluded: yes
+7. parquet written: no
+8. videos encoded: no
+9. staged image paths are relative paths under image_staging/
 
-3. src/doosan_forcevla_data/convert/stage_lerobot_export.py
-   Added image path resolution for staged export. Image paths may now be absolute, relative to the processed episode directory, or relative to metadata_processed.json source_raw_episode. Staged frames write resolved absolute image paths.
-
-4. src/doosan_forcevla_data/validate/validate_raw_episode.py
-   Added validation for optional tcp_pose.csv gripper_pos values when the column is present. The column remains optional.
-
-5. src/doosan_forcevla_data/dummy/make_dummy_raw_episode.py
-   Fixed dummy joint velocity to use timestamp span, not nominal frame coverage.
-
-6. tests/test_raw_to_processed.py
-   Added a regression test showing validate_processed_episode accepts a structurally valid processed episode with zero rotation actions.
-
-7. tests/test_plan_lerobot_export.py
-   Added a regression test showing validate_export_plan accepts a valid manifest with an excluded terminal padding count other than 1.
-
-8. tests/test_stage_lerobot_export.py
-   Added a regression test showing staged export resolves relative processed image paths to existing absolute paths.
-
-9. tests/test_dummy_raw_episode.py
-   Added tests for optional gripper_pos finite validation and dummy joint velocity based on timestamp span.
-
-10. opencode_report.txt
-    Updated this report.
-
-README.md and docs/lerobot_export_plan.md were not changed in this cleanup pass because CLI commands and documented external pipeline behavior did not change.
-
-Robustness issue 1: processed action nonzero checks
----------------------------------------------------
-Previous behavior:
-validate_processed_episode failed if no non-final action had nonzero translation or if no non-final action had nonzero rotation.
-
-Problem:
-That made a generic structural validator reject valid episodes that are stationary, near-stationary, constrained to pure translation, or constrained to pure rotation. A validator should check schema and numeric validity, not assume task motion content.
-
-Change:
-The hard errors were removed:
-1. expected at least one non-final action with nonzero translation
-2. expected at least one non-final action with nonzero rotation
-
-Preserved behavior:
-1. Action statistics remain in inspect_processed_episode.py.
-2. Existing dummy tests still assert the dummy episode has nonzero translation and rotation.
-
-Regression test:
-tests/test_raw_to_processed.py now modifies processed non-final actions to have zero rotation and confirms validate_processed_episode still passes.
-
-Robustness issue 2: export plan terminal padding count
-------------------------------------------------------
-Previous behavior:
-validate_export_plan required excluded_terminal_padding_frame_count == 1.
-
-Problem:
-That was true for the current dummy convention but too specific for a generic export-plan validator. Future episodes or profiles might exclude zero, one, or more frames.
-
-Change:
-The validator now checks:
-1. excluded_terminal_padding_frame_count is an integer.
-2. excluded_terminal_padding_frame_count >= 0.
-3. excluded_terminal_padding_frame_count == input_frame_count - exported_frame_count.
-4. If terminal_padding_excluded is true, input_frame_count >= exported_frame_count.
-
-Preserved behavior:
-Dummy export-plan tests still assert the dummy value is 1.
-
-Regression test:
-tests/test_plan_lerobot_export.py now validates a synthetic manifest with input_frame_count 20, exported_frame_count 18, and excluded_terminal_padding_frame_count 2.
-
-Robustness issue 3: staged export image path resolution
--------------------------------------------------------
-Previous behavior:
-stage_lerobot_export assumed image paths were directly usable as filesystem paths, which worked for absolute paths but not for relative paths.
-
-Problem:
-Processed JSONL may reasonably store image paths relative to the processed episode or relative to the source raw episode.
-
-Change:
-stage_lerobot_export now resolves image paths in this order:
-1. If the path is absolute, require it to exist and use it.
-2. Else try relative to the processed episode directory.
-3. Else try relative to metadata_processed.json source_raw_episode.
-4. If none exists, raise a clear ValueError.
-
-Staged frames now write resolved absolute image paths for observation.image and observation.wrist_image.
-
-Regression test:
-tests/test_stage_lerobot_export.py now rewrites processed frames.jsonl image paths to source-raw-relative paths such as images/external_rgb/000000.ppm, then confirms staging resolves them to existing absolute paths.
-
-Robustness issue 4: optional gripper_pos validation
----------------------------------------------------
-Previous behavior:
-tcp_pose.csv gripper_pos was optional, but if present it was not checked by validate_raw_episode.
-
-Problem:
-Non-finite values such as NaN or inf could pass raw validation if they appeared in an optional gripper_pos column.
-
-Change:
-validate_raw_episode now checks gripper_pos as a finite numeric field when the column exists. It still does not require gripper_pos to exist.
-
-Regression test:
-tests/test_dummy_raw_episode.py now writes NaN into gripper_pos and confirms raw validation fails with an error mentioning gripper_pos.
-
-Robustness issue 5: dummy joint velocity consistency
-----------------------------------------------------
-Previous behavior:
-Dummy joint velocity used total_joint_delta / (frame_count / fps), which is nominal frame coverage.
-
-Problem:
-For a 20-frame sequence starting at t=0, the timestamp span is (frame_count - 1) / fps, not frame_count / fps.
-
-Change:
-Dummy joint velocity now uses:
-
-timestamp_span = (frame_count - 1) / fps
-joint_velocity = total_joint_delta / timestamp_span
-
-Regression test:
-tests/test_dummy_raw_episode.py now asserts the default dummy joint_vel_0 is approximately 0.02 / (19 / 30).
-
-Preserved staged/export behavior
+doosan_full_25d skeleton summary
 --------------------------------
-The staged/export behavior remains intact:
-1. forcevla_13d staged export has 19 frames for the 20-frame dummy episode.
-2. forcevla_13d observation.state length is 13.
-3. doosan_full_25d observation.state length is 25.
-4. action length is 7.
-5. staged image paths exist.
-6. final terminal-padded frame remains excluded from staged export.
+Manual output path:
+data/lerobot_dummy/doosan_full_25d/doosan_peg_in_hole_v0
 
-Tests run and result
---------------------
-Command:
+Summary:
+1. profile: doosan_full_25d
+2. image mode: copy
+3. total frames: 19
+4. observation.state shape: [25]
+5. action shape: [7]
+6. terminal-padded final frame excluded: yes
+7. parquet written: no
+8. videos encoded: no
+9. staged image paths are relative paths under image_staging/
+
+Test results
+------------
+Command run:
 
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 Result:
-Passed. Ran 16 tests. Result OK.
+Passed. Ran 18 tests. Result OK.
 
-Observed tests:
-1. test_invalid_input_sizes_raise_value_error ... ok
-2. test_non_normalized_quaternion_input_still_works ... ok
-3. test_output_length_7_and_no_nans ... ok
-4. test_pure_x_translation_gives_dx_only ... ok
-5. test_pure_z_rotation_90_degrees ... ok
-6. test_zero_motion_gives_all_zeros ... ok
-7. test_create_dummy_episode_and_validate_success ... ok
-8. test_dummy_joint_velocity_uses_timestamp_span ... ok
-9. test_optional_gripper_pos_is_validated_when_present ... ok
-10. test_summary_for_converted_dummy_episode ... ok
-11. test_export_plan_validator_accepts_generic_excluded_count ... ok
-12. test_forcevla_and_full_profile_export_plans ... ok
-13. test_convert_dummy_raw_episode_and_validate_processed ... ok
-14. test_processed_validator_accepts_zero_rotation_actions ... ok
-15. test_stage_forcevla_and_full_profile_exports ... ok
-16. test_stage_resolves_relative_image_paths ... ok
+New tests added:
+1. forcevla_13d symlink mode skeleton write and validation.
+2. doosan_full_25d copy mode skeleton write and validation.
 
-Cleanup items not implemented
------------------------------
-All requested cleanup items were implemented. No requested cleanup item was intentionally skipped.
+Manual command results
+----------------------
+forcevla_13d manual pipeline:
+1. make_dummy_raw_episode succeeded.
+2. raw_to_processed succeeded.
+3. plan_lerobot_export for forcevla_13d succeeded.
+4. stage_lerobot_export for forcevla_13d succeeded.
+5. write_lerobot_skeleton for forcevla_13d with image-mode symlink succeeded.
+6. validate_lerobot_skeleton for forcevla_13d succeeded.
+
+Observed forcevla_13d CLI summary:
+profile: forcevla_13d
+total frames: 19
+image mode: symlink
+data path template: data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.jsonl
+validation result: OK
+
+doosan_full_25d manual pipeline:
+1. plan_lerobot_export for doosan_full_25d succeeded.
+2. stage_lerobot_export for doosan_full_25d succeeded.
+3. write_lerobot_skeleton for doosan_full_25d with image-mode copy succeeded.
+4. validate_lerobot_skeleton for doosan_full_25d succeeded.
+
+Observed doosan_full_25d CLI summary:
+profile: doosan_full_25d
+total frames: 19
+image mode: copy
+data path template: data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.jsonl
+validation result: OK
 
 Known limitations
 -----------------
-1. The pipeline is still offline and dummy-data oriented.
-2. No ROS recorder exists.
-3. No real LeRobot parquet writer exists.
-4. No video encoder exists.
-5. Images are referenced, not copied.
-6. No Hugging Face integration exists.
-7. No any4lerobot integration exists.
-8. Raw stream alignment is still by frame index only.
-9. Advanced timestamp synchronization is not implemented.
-10. Validators check structure and finite numeric values but not manipulation-task semantics.
-11. Staged JSONL is inspectable only and is still not training-ready LeRobot data.
-
-Final summary
--------------
-Files modified:
-1. src/doosan_forcevla_data/validate/validate_processed_episode.py
-2. src/doosan_forcevla_data/validate/validate_export_plan.py
-3. src/doosan_forcevla_data/convert/stage_lerobot_export.py
-4. src/doosan_forcevla_data/validate/validate_raw_episode.py
-5. src/doosan_forcevla_data/dummy/make_dummy_raw_episode.py
-6. tests/test_raw_to_processed.py
-7. tests/test_plan_lerobot_export.py
-8. tests/test_stage_lerobot_export.py
-9. tests/test_dummy_raw_episode.py
-10. opencode_report.txt
-
-Tests run and result:
-PYTHONPATH=src python3 -m unittest discover -s tests -v passed with 16 tests OK.
-
-All cleanup items completed:
-Yes.
-
-Cleanup item intentionally not implemented:
-None.
+1. The skeleton data file is JSONL, not parquet.
+2. No MP4 videos are encoded.
+3. image shape is recorded as null because current dummy PPM images are placeholders and real camera dimensions are not known here.
+4. The skeleton writer currently handles a single staged episode per output.
+5. episodes_stats.jsonl is intentionally a stub with an empty stats object.
+6. Symlink mode is intended for local/dummy development and is not portable if source images move.
+7. Copy mode is more portable but still not a final training-ready LeRobot dataset.
+8. No LeRobot package API is imported or used.
+9. No dependency availability checks for pyarrow, pandas, video encoders, or lerobot were performed.
+10. No Hugging Face upload path exists.
+11. No any4lerobot integration exists.
+12. No ROS recorder exists.
 
 Exact next recommended task
 ---------------------------
-Decide and document the real LeRobot parquet/video writer design before implementing it. The next design document should cover image handling, video encoding strategy, final feature schema names/dtypes, terminal-frame policy, and whether forcevla_13d needs a staged placeholder for the missing third camera.
+Implement a real local LeRobot writer design decision step that checks available dependencies and confirms the exact v2.1 parquet/video schema before writing parquet or encoding videos. The next code should still avoid Hugging Face upload, ROS recording, package installation without approval, and any4lerobot integration until the local schema path is confirmed.
+
+Final summary
+-------------
+The repository now has a complete offline path through local LeRobot-style skeleton export:
+
+raw dummy episode -> validate raw -> convert to processed JSONL -> validate processed -> inspect processed -> plan dry-run export -> validate export plan -> stage export JSONL -> validate staged export -> write LeRobot skeleton -> validate LeRobot skeleton
+
+The primary target remains forcevla_13d. doosan_full_25d remains supported as the secondary full-proprioception profile. The primary learning action label remains measured TCP delta from robot state, independent of demonstration method.

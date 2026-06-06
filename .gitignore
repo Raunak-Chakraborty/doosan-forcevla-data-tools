@@ -5,5 +5,7 @@ __pycache__/
 .env
 data/raw_dummy/
 data/processed_dummy/
+data/staged_dummy/
+data/lerobot_dummy/
 *.egg-info/
 .pytest_cache/

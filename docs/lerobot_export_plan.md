@@ -75,7 +75,7 @@ Future LeRobot export should either:
 - Copy images into export staging before video encoding, or
 - Encode videos directly from referenced raw images.
 
-Do not decide the implementation yet. The next step should only produce a dry-run manifest.
+The current implementation sequence first produces a dry-run manifest, then staged JSONL records, then a local LeRobot-style skeleton with controlled image staging. Direct video encoding from arbitrary raw references remains a future option, not the current step.
 
 ## Dry-run Export Manifest
 
@@ -98,6 +98,49 @@ It still does not:
 - upload to Hugging Face
 - import LeRobot
 
+## Staged Export Dry Run
+
+The staged export dry run is an inspectable JSONL representation of what the future LeRobot / ForceVLA export records would look like for a selected profile.
+
+It writes:
+
+- `metadata_staged.json`
+- `frames.jsonl`
+
+Each staged frame uses future-facing keys:
+
+- `observation.image`
+- `observation.wrist_image`
+- `observation.state`
+- `action`
+- `task`
+
+For `forcevla_13d`, `observation.state` is 13D:
+
+```text
+ee_pos(3) + ee_axis_angle(3) + gripper_pos(1) + wrench(6)
+```
+
+For `doosan_full_25d`, `observation.state` is the full 25D `model_state`.
+
+The staged export still does not write training-ready data. It does not write parquet, encode videos, copy images, upload to Hugging Face, import LeRobot, or integrate any4lerobot. Images are referenced by path only.
+
+## Local LeRobot Skeleton Writer
+
+The local skeleton writer comes after staged export and before real parquet/video export.
+
+It writes a v2.1-style folder skeleton:
+
+- `meta/info.json`
+- `meta/tasks.jsonl`
+- `meta/episodes.jsonl`
+- `meta/episodes_stats.jsonl`
+- `data/chunk-000/episode_000000.jsonl`
+- `image_staging/observation.image/episode_000000/`
+- `image_staging/observation.wrist_image/episode_000000/`
+
+The skeleton writer supports `forcevla_13d` as the default first target and `doosan_full_25d` as the secondary full-proprioception target. It stages images by symlink or copy, writes JSONL placeholder records instead of parquet, excludes terminal padding frames, and still does not encode videos, upload to Hugging Face, import LeRobot, or integrate any4lerobot.
+
 ## any4lerobot Usage
 
 - Use only as a reference for LeRobot metadata and version conventions.
@@ -105,4 +148,4 @@ It still does not:
 
 ## Next Implementation After This Planning Step
 
-After the dry-run manifest is stable, implement the first real export staging step. That should still avoid Hugging Face upload and should explicitly decide whether images are copied into staging or encoded directly from references.
+After the local skeleton output is stable, decide the actual LeRobot parquet/video writer design. That decision should explicitly choose whether to continue using staged copied/symlinked images before encoding or support direct encoding from referenced raw image paths as a future option.

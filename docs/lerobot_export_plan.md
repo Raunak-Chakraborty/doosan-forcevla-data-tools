@@ -41,6 +41,7 @@ Observation mapping:
 - `observation.state` = 13D: `ee_pos(3) + ee_axis_angle(3) + gripper_pos(1) + wrench(6)`
 - `action` = `measured_action` 7D
 - `task` = `task_instruction`
+- `prompt` = `task_instruction`
 
 Terminal frame policy:
 
@@ -59,6 +60,7 @@ Observation mapping:
 - `observation.state` = full 25D `model_state`
 - `action` = `measured_action` 7D
 - `task` = `task_instruction`
+- `prompt` = `task_instruction`
 
 Terminal frame policy:
 
@@ -140,6 +142,8 @@ It writes a v2.1-style folder skeleton:
 - `image_staging/observation.wrist_image/episode_000000/`
 
 The skeleton writer supports `forcevla_13d` as the default first target and `doosan_full_25d` as the secondary full-proprioception target. It stages images by symlink or copy, writes JSONL placeholder records instead of parquet, excludes terminal padding frames, and still does not encode videos, upload to Hugging Face, import LeRobot, or integrate any4lerobot.
+
+Skeleton records include both `task` and `prompt`; `prompt` currently duplicates `task` for ForceVLA/OpenPI compatibility. Existing skeleton output directories are rejected unless the writer is run with `--overwrite`.
 
 ## any4lerobot Usage
 

@@ -7,7 +7,7 @@ This document defines the first real LeRobot-compatible writer design for the Do
 The current offline pipeline is:
 
 ```text
-raw episode -> processed JSONL -> export plan -> staged export JSONL
+raw episode -> processed JSONL -> export plan -> staged export JSONL -> local LeRobot skeleton
 ```
 
 Current stages:
@@ -16,6 +16,7 @@ Current stages:
 - Processed JSONL: fixed-shape per-frame records with `model_state`, `measured_action`, timestamps, image references, and terminal action padding.
 - Export plan: dry-run JSON manifest that chooses an export profile and verifies dimensions, keys, image availability, and terminal-frame exclusion.
 - Staged export JSONL: inspectable records with future-facing keys such as `observation.image`, `observation.wrist_image`, `observation.state`, `action`, and `task`.
+- Local LeRobot skeleton: v2.1-style metadata, JSONL placeholder records, and controlled `image_staging/` with symlink or copy mode.
 
 The staged export is useful for checking record shape before committing to a parquet/video writer, but it is not training-ready LeRobot data.
 
@@ -40,6 +41,7 @@ Mapping:
 - `observation.state` = 13D state
 - `action` = 7D measured TCP delta
 - `task` = `task_instruction`
+- `prompt` = `task_instruction`
 
 `observation.state` layout:
 
@@ -73,6 +75,7 @@ Mapping:
 - `observation.state` = full 25D `model_state`
 - `action` = 7D `measured_action`
 - `task` = `task_instruction`
+- `prompt` = `task_instruction`
 
 `observation.state` layout:
 
@@ -142,7 +145,7 @@ The skeleton writer creates:
 - `image_staging/observation.image/episode_000000/`
 - `image_staging/observation.wrist_image/episode_000000/`
 
-The tabular data file is intentionally a JSONL placeholder in the future LeRobot-like data path, not parquet. The writer stages images into a controlled local tree using either symlinks for dummy/local development or copies for more portable snapshots. It does not encode MP4 videos, does not write parquet, does not import LeRobot, does not upload to Hugging Face, and does not create training-ready LeRobot data yet.
+The tabular data file is intentionally a JSONL placeholder in the future LeRobot-like data path, not parquet. The writer stages images into a controlled local tree using either symlinks for dummy/local development or copies for more portable snapshots. Skeleton frame records include both `task` and `prompt`, with `prompt` currently equal to `task` for ForceVLA/OpenPI compatibility. Existing skeleton outputs are rejected unless `--overwrite` is passed. It does not encode MP4 videos, does not write parquet, does not import LeRobot, does not upload to Hugging Face, and does not create training-ready LeRobot data yet.
 
 ## 6. Image Handling Decision
 
@@ -204,6 +207,9 @@ Likely future dependencies:
 Recommended dependency workflow:
 
 - First check what is already installed on the laptop.
+- Run `PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.check_export_dependencies` without installing anything.
+- Repeat the same dependency check on the lab workstation inside the validated ForceVLA environment.
+- Treat missing laptop dependencies as informational, not final blockers.
 - Prefer LeRobot's official dataset creation utilities if available and compatible with the selected v2.1-style layout.
 - If official utilities are unavailable or incompatible, write minimal parquet/video manually only after confirming the exact required schema.
 - Do not add dependency declarations until the chosen writer path is validated locally.
@@ -254,6 +260,7 @@ Planned feature schema for `forcevla_13d`:
 - `task_index`: `int64`
 - `index`: `int64`
 - `task`: string or `task_index` with `tasks.jsonl`
+- `prompt`: string, equal to `task` for the first ForceVLA/OpenPI compatibility check
 
 Planned feature schema for `doosan_full_25d`:
 
@@ -267,6 +274,7 @@ Planned feature schema for `doosan_full_25d`:
 - `task_index`: `int64`
 - `index`: `int64`
 - `task`: string or `task_index` with `tasks.jsonl`
+- `prompt`: string, equal to `task` for the first ForceVLA/OpenPI compatibility check
 
 Implementation note:
 
@@ -308,28 +316,29 @@ Concrete open questions:
 - Should real robot export use MP4 videos or image folders first?
 - Should `timestamp` be stored as `float32` for compactness or `float64` for precision?
 - Should `task` be stored directly per row or only via `task_index` plus `tasks.jsonl`?
+- Does the ForceVLA loader expect `prompt`, `task`, or both?
+- Should parquet contain image/video reference columns, or should videos be referenced only through `info.json` metadata?
 - Should the first local writer create symlinks by default and offer a copy mode later?
 
 ## 13. Next Implementation Recommendation
 
 Next coding task:
 
-Implement a first local export skeleton that creates metadata and placeholder tabular records, but still does not write parquet or videos.
+Implement a real-export preflight command that reads a skeleton export, checks dependencies, verifies metadata/schema choices, and reports whether parquet/video writing is possible without writing parquet or videos.
 
-The skeleton should create:
+The preflight should check:
 
-- `meta/info.json`
-- `meta/tasks.jsonl`
-- `meta/episodes.jsonl`
-- `data/chunk-000/episode_000000.jsonl` or CSV placeholder
+- skeleton metadata and JSONL schema
+- `task` and `prompt` compatibility fields
+- image staging completeness
+- dependency availability for parquet and video writing
 
-The skeleton should:
+The preflight should:
 
-- Read a validated staged export or processed episode plus export plan.
-- Exclude terminal-padded frames.
 - Preserve `forcevla_13d` as the first profile.
-- Write shape/dtype metadata.
-- Keep image handling as references or a local symlink/copy staging decision.
+- Keep `doosan_full_25d` as secondary.
+- Report missing laptop dependencies as informational.
+- Remind the user to run the same check on the lab ForceVLA environment.
 - Avoid parquet and videos until dependencies and LeRobot schema are confirmed.
 
 Do not implement:

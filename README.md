@@ -53,6 +53,7 @@ This repository currently provides:
 - a dry-run LeRobot / ForceVLA export manifest planner
 - a staged JSONL export dry run for planned profiles
 - a local LeRobot-style skeleton writer with JSONL placeholder records and staged image references
+- a dependency preflight CLI for future real parquet/video export
 - standard-library `unittest` tests
 
 ## Current Pipeline Status
@@ -127,22 +128,32 @@ Staged frames are inspectable JSONL records with `observation.image`, `observati
 Write a v2.1-style local skeleton for the first target profile with symlinked staged images and JSONL placeholder rows instead of parquet:
 
 ```bash
-PYTHONPATH=src python3 -m doosan_forcevla_data.convert.write_lerobot_skeleton --staged data/staged_dummy/forcevla_13d/episode_000000 --output data/lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0 --episode-index 0 --task-index 0 --profile forcevla_13d --image-mode symlink
+PYTHONPATH=src python3 -m doosan_forcevla_data.convert.write_lerobot_skeleton --staged data/staged_dummy/forcevla_13d/episode_000000 --output data/lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0 --episode-index 0 --task-index 0 --profile forcevla_13d --image-mode symlink --overwrite
 PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_lerobot_skeleton data/lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0
 ```
 
 Write the secondary full-proprioception skeleton with copied staged images:
 
 ```bash
-PYTHONPATH=src python3 -m doosan_forcevla_data.convert.write_lerobot_skeleton --staged data/staged_dummy/doosan_full_25d/episode_000000 --output data/lerobot_dummy/doosan_full_25d/doosan_peg_in_hole_v0 --episode-index 0 --task-index 0 --profile doosan_full_25d --image-mode copy
+PYTHONPATH=src python3 -m doosan_forcevla_data.convert.write_lerobot_skeleton --staged data/staged_dummy/doosan_full_25d/episode_000000 --output data/lerobot_dummy/doosan_full_25d/doosan_peg_in_hole_v0 --episode-index 0 --task-index 0 --profile doosan_full_25d --image-mode copy --overwrite
 PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_lerobot_skeleton data/lerobot_dummy/doosan_full_25d/doosan_peg_in_hole_v0
 ```
 
-The skeleton output creates `meta/info.json`, `meta/tasks.jsonl`, `meta/episodes.jsonl`, `meta/episodes_stats.jsonl`, `data/chunk-000/episode_000000.jsonl`, and an `image_staging/` tree. It still does not write parquet, encode videos, import LeRobot, upload to Hugging Face, or create training-ready LeRobot data.
+The skeleton output creates `meta/info.json`, `meta/tasks.jsonl`, `meta/episodes.jsonl`, `meta/episodes_stats.jsonl`, `data/chunk-000/episode_000000.jsonl`, and an `image_staging/` tree. Skeleton frame records include both `task` and `prompt`, with `prompt` currently equal to `task` for ForceVLA/OpenPI compatibility. Existing skeleton outputs are not overwritten unless `--overwrite` is passed. The skeleton still does not write parquet, encode videos, import LeRobot, upload to Hugging Face, or create training-ready LeRobot data.
+
+## Export Dependency Preflight
+
+Check optional future real-export dependencies without installing anything:
+
+```bash
+PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.check_export_dependencies
+```
+
+This command checks Python, `pyarrow`, `pandas`, `lerobot`, `cv2`, `imageio`, `PIL`, and `ffmpeg`. Missing laptop dependencies are not final blockers because real ForceVLA compatibility must be validated later on the lab workstation inside the validated ForceVLA environment. Run the same command on both the laptop and the lab workstation.
 
 ## Real LeRobot Writer Design
 
-The first real writer design is documented in `docs/real_lerobot_writer_design.md`. It targets `forcevla_13d` first, recommends a LeRobot v2.1-style local export, and records the open decisions that must be resolved before writing parquet or videos.
+The first real writer design is documented in `docs/real_lerobot_writer_design.md`. The concrete schema decision before real parquet/video work is documented in `docs/real_lerobot_schema_decision.md`. The first target remains `forcevla_13d`, with `doosan_full_25d` kept as a secondary full-proprioception target.
 
 ## Limitations
 
@@ -156,6 +167,7 @@ The first real writer design is documented in `docs/real_lerobot_writer_design.m
 - The export planner writes a small JSON dry-run manifest only; it does not create LeRobot parquet or videos.
 - The staged export writes inspectable JSONL records only; it still does not create training-ready LeRobot data.
 - The LeRobot skeleton writer creates v2.1-style folders, JSONL placeholder records, and staged images only; it still does not write parquet or encode videos.
+- Laptop dependency availability is informative only; real ForceVLA loader and training compatibility must be checked on the lab workstation.
 
 ## Example Commands
 
@@ -163,6 +175,7 @@ If the package is not installed, run with `PYTHONPATH=src`:
 
 ```bash
 PYTHONPATH=src python3 -m unittest discover -s tests -v
+PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.check_export_dependencies
 PYTHONPATH=src python3 -m doosan_forcevla_data.dummy.make_dummy_raw_episode --output data/raw_dummy/episode_000000
 PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_raw_episode data/raw_dummy/episode_000000
 PYTHONPATH=src python3 -m doosan_forcevla_data.convert.raw_to_processed --raw data/raw_dummy/episode_000000 --output data/processed_dummy/episode_000000
@@ -176,8 +189,8 @@ PYTHONPATH=src python3 -m doosan_forcevla_data.convert.stage_lerobot_export --pr
 PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_staged_export data/staged_dummy/forcevla_13d/episode_000000
 PYTHONPATH=src python3 -m doosan_forcevla_data.convert.stage_lerobot_export --processed data/processed_dummy/episode_000000 --export-plan data/processed_dummy/episode_000000/export_plan_doosan_full_25d.json --output data/staged_dummy/doosan_full_25d/episode_000000
 PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_staged_export data/staged_dummy/doosan_full_25d/episode_000000
-PYTHONPATH=src python3 -m doosan_forcevla_data.convert.write_lerobot_skeleton --staged data/staged_dummy/forcevla_13d/episode_000000 --output data/lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0 --episode-index 0 --task-index 0 --profile forcevla_13d --image-mode symlink
+PYTHONPATH=src python3 -m doosan_forcevla_data.convert.write_lerobot_skeleton --staged data/staged_dummy/forcevla_13d/episode_000000 --output data/lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0 --episode-index 0 --task-index 0 --profile forcevla_13d --image-mode symlink --overwrite
 PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_lerobot_skeleton data/lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0
-PYTHONPATH=src python3 -m doosan_forcevla_data.convert.write_lerobot_skeleton --staged data/staged_dummy/doosan_full_25d/episode_000000 --output data/lerobot_dummy/doosan_full_25d/doosan_peg_in_hole_v0 --episode-index 0 --task-index 0 --profile doosan_full_25d --image-mode copy
+PYTHONPATH=src python3 -m doosan_forcevla_data.convert.write_lerobot_skeleton --staged data/staged_dummy/doosan_full_25d/episode_000000 --output data/lerobot_dummy/doosan_full_25d/doosan_peg_in_hole_v0 --episode-index 0 --task-index 0 --profile doosan_full_25d --image-mode copy --overwrite
 PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_lerobot_skeleton data/lerobot_dummy/doosan_full_25d/doosan_peg_in_hole_v0
 ```

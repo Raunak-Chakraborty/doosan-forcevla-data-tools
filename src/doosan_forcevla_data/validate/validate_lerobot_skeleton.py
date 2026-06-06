@@ -41,6 +41,7 @@ REQUIRED_FRAME_KEYS = [
     "task_index",
     "index",
     "task",
+    "prompt",
 ]
 
 
@@ -245,6 +246,8 @@ def validate_lerobot_skeleton(skeleton_dir: str | Path) -> ValidationResult:
         errors.append(f"{info_path}: observation.state feature shape must be [{state_dim}]")
     if _feature_shape(info, "action") != [ACTION_DIM]:
         errors.append(f"{info_path}: action feature shape must be [{ACTION_DIM}]")
+    if _feature_shape(info, "prompt") != [1]:
+        errors.append(f"{info_path}: prompt feature shape must be [1]")
 
     if not _is_int(task.get("task_index")):
         errors.append(f"{tasks_path}: task_index must be an integer")
@@ -310,6 +313,10 @@ def validate_lerobot_skeleton(skeleton_dir: str | Path) -> ValidationResult:
             errors.append(f"frame {idx}: task_index must match tasks.jsonl")
         if not isinstance(frame.get("task"), str) or not frame.get("task", "").strip():
             errors.append(f"frame {idx}: task must be a non-empty string")
+        if not isinstance(frame.get("prompt"), str) or not frame.get("prompt", "").strip():
+            errors.append(f"frame {idx}: prompt must be a non-empty string")
+        elif isinstance(frame.get("task"), str) and frame["prompt"] != frame["task"]:
+            errors.append(f"frame {idx}: prompt must equal task")
 
         _check_relative_image_path(
             root,

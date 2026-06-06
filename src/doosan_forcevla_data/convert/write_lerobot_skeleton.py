@@ -157,6 +157,7 @@ def _features_for_profile(profile: str) -> dict[str, dict[str, Any]]:
         "task_index": {"dtype": "int64", "shape": [1]},
         "index": {"dtype": "int64", "shape": [1]},
         "task": {"dtype": "string", "shape": [1]},
+        "prompt": {"dtype": "string", "shape": [1]},
     }
 
 
@@ -172,6 +173,7 @@ def write_lerobot_skeleton(
     task_index: int = 0,
     profile: str = DEFAULT_PROFILE,
     image_mode: str = "symlink",
+    overwrite: bool = False,
 ) -> Path:
     """Write a local inspectable LeRobot-style skeleton export."""
 
@@ -184,8 +186,11 @@ def write_lerobot_skeleton(
 
     staged_root = Path(staged_export_dir)
     output_root = Path(output_dir)
-    if output_root.exists() and not output_root.is_dir():
+    output_exists = output_root.exists() or output_root.is_symlink()
+    if output_exists and (output_root.is_symlink() or not output_root.is_dir()):
         raise ValueError(f"output path exists and is not a directory: {output_root}")
+    if output_exists and not overwrite:
+        raise ValueError(f"output directory already exists; pass --overwrite to replace it: {output_root}")
 
     validation = validate_staged_export(staged_root)
     if not validation.ok:
@@ -206,6 +211,9 @@ def write_lerobot_skeleton(
     expected_state_dim = _state_dim_for_profile(profile)
     exported_frame_count = len(frames)
     episode_name = f"episode_{episode_index:06d}"
+
+    if output_exists and overwrite:
+        shutil.rmtree(output_root)
 
     meta_dir = output_root / "meta"
     data_dir = output_root / "data" / "chunk-000"
@@ -293,6 +301,7 @@ def write_lerobot_skeleton(
                 "task_index": task_index,
                 "index": frame_index,
                 "task": frame_task,
+                "prompt": frame_task,
             }
             handle.write(json.dumps(output_frame, separators=(",", ":")) + "\n")
 
@@ -322,6 +331,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--task-index", type=int, default=0)
     parser.add_argument("--profile", choices=sorted(VALID_PROFILES), default=DEFAULT_PROFILE)
     parser.add_argument("--image-mode", choices=sorted(IMAGE_MODES), default="symlink")
+    parser.add_argument("--overwrite", action="store_true", help="Replace an existing skeleton output directory")
     args = parser.parse_args(argv)
 
     try:
@@ -332,6 +342,7 @@ def main(argv: list[str] | None = None) -> int:
             task_index=args.task_index,
             profile=args.profile,
             image_mode=args.image_mode,
+            overwrite=args.overwrite,
         )
     except ValueError as exc:
         print(f"FAILED: could not write LeRobot skeleton: {args.output}")

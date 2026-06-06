@@ -1,194 +1,59 @@
-Doosan ForceVLA Data Tools Real Export Preflight Report
-=======================================================
+Doosan ForceVLA Data Tools Lab Validation Checklist Report
+==========================================================
 
 Repository
 ----------
 Path: /home/horus/robotics_thesis/doosan_forcevla_data_tools
 Project context: Doosan M1013 peg-in-hole dataset preparation for ForceVLA/tshiamor-style imitation learning.
 
-Execution context
------------------
-The laptop/OpenCode environment is used for code-writing. The lab workstation has the validated ForceVLA repository/environment and must be used later for real ForceVLA compatibility validation. Missing laptop dependencies are informational and are not final blockers.
-
 Task summary
 ------------
-Implemented a read-only real-export preflight command. The command reads a local LeRobot-style skeleton export, validates it, checks schema and metadata consistency, checks prompt/task compatibility, checks staged image completeness, checks optional export dependencies, and reports readiness for future parquet/video export. It does not write parquet or videos.
+Created documentation for validating this repository on the lab workstation inside the already validated ForceVLA environment. No code was modified for this task. No packages were installed. No Hugging Face upload, ROS recorder, or any4lerobot integration was added. No commit was made.
 
 Files created/modified
 ----------------------
-1. src/doosan_forcevla_data/inspect/preflight_real_export.py
-   Created the real-export preflight CLI and helper functions.
+1. docs/lab_workstation_validation_checklist.md
+   Created the lab workstation validation checklist.
 
-2. tests/test_preflight_real_export.py
-   Added unittest coverage for forcevla_13d symlink preflight, doosan_full_25d copy preflight, JSON report output, and prompt/task mismatch reporting.
+2. README.md
+   Added a short pointer to the lab workstation validation checklist.
 
-3. README.md
-   Added the real-export preflight command, JSON output example, and lab workstation validation reminder.
+3. opencode_report.txt
+   Updated this report with files changed, checklist contents, verification result, and next recommended task.
 
-4. docs/real_lerobot_schema_decision.md
-   Added a Real Export Preflight section and updated the next-step recommendation.
+Checklist contents
+------------------
+The checklist includes:
 
-5. docs/real_lerobot_writer_design.md
-   Updated the current pipeline, dependency workflow, and next implementation recommendation to include real-export preflight.
+1. Purpose and lab validation scope.
+2. Path variables for LAB_DATA_TOOLS_REPO, LAB_FORCEVLA_REPO, and FORCEVLA_ENV.
+3. Transfer options by private GitHub pull or zip transfer.
+4. Lab ForceVLA environment activation placeholders.
+5. Basic repository sanity commands.
+6. Dependency check command and instruction to paste output.
+7. Full forcevla_13d dummy pipeline commands on the lab workstation.
+8. Real-export attempt commands on the lab workstation.
+9. Outputs to paste back into ChatGPT.
+10. Lab result checks for pyarrow, lerobot, video dependencies, readiness flags, parquet/video artifacts, schema errors, and ForceVLA import conflicts.
+11. Next decision logic after lab validation.
+12. Design reminders for forcevla_13d, doosan_full_25d, measured TCP delta action, prompt/task compatibility, terminal-frame exclusion, controlled image staging, and no fake third camera.
 
-6. opencode_report.txt
-   Updated this report with implementation details, test results, dependency results, preflight summary, limitations, and next task.
-
-Implemented behavior
---------------------
-CLI:
-
-PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.preflight_real_export data/lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0
-
-Optional JSON output:
-
-PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.preflight_real_export data/lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0 --output data/lerobot_dummy/forcevla_13d/preflight_report.json
-
-Helper function:
-
-preflight_real_export(skeleton_dir) -> dict
-
-The returned report includes:
-1. skeleton_dir
-2. profile
-3. total_frames
-4. state_dim
-5. action_dim
-6. skeleton_valid
-7. schema_valid
-8. prompt_task_compatible
-9. image_staging_complete
-10. image_counts
-11. image_file_type_counts
-12. dependency_summary
-13. parquet_ready
-14. video_ready
-15. lerobot_api_available
-16. real_export_ready
-17. video_export_ready
-18. warnings
-19. errors
-20. next_recommended_action
-
-Readiness logic
----------------
-1. skeleton_valid is based on validate_lerobot_skeleton.
-2. schema_valid checks profile, state/action dimensions, prompt/task features, prompt == task, terminal padding field absence, frame counts, and metadata flags.
-3. image_staging_complete requires both observation.image and observation.wrist_image paths to exist under the skeleton root for every frame.
-4. parquet_ready is true only when pyarrow is available.
-5. video_ready is true only when ffmpeg is available and at least one of imageio, cv2, or PIL is available.
-6. lerobot_api_available is true only when lerobot is importable.
-7. real_export_ready is true only when skeleton/schema/images are valid and parquet_ready is true.
-8. video_export_ready is true only when skeleton/schema/images are valid and video_ready is true.
-
-Exit code policy
-----------------
-1. The CLI exits 0 when preflight checks run successfully and the skeleton validates, even if optional dependencies are missing.
-2. The CLI exits nonzero when skeleton validation fails or the skeleton cannot be read.
-3. The helper returns a structured report for schema problems, including prompt/task mismatches, so tests and callers can inspect bad exports without crashing.
-
-Test results
+Verification
 ------------
 Command run:
 
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 
 Result:
-Passed. Ran 25 tests. Result OK.
-
-New tests added:
-1. forcevla_13d symlink skeleton preflight.
-2. doosan_full_25d copy skeleton preflight.
-3. JSON preflight report output.
-4. prompt != task corruption is reported without crashing.
-
-Dependency check summary
-------------------------
-Command run:
-
-PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.check_export_dependencies
-
-Observed laptop result:
-1. python: available, version 3.12.3
-2. pyarrow: missing
-3. pandas: missing
-4. lerobot: missing
-5. cv2: available, version 4.6.0
-6. imageio: missing
-7. PIL: available, version 10.2.0
-8. ffmpeg: available at /usr/bin/ffmpeg
-
-Important reminder:
-This laptop dependency result is informational only. The same dependency check must be run on the lab workstation inside the validated ForceVLA environment before treating dependency availability as meaningful for real ForceVLA compatibility.
-
-Manual preflight pipeline
--------------------------
-Commands run:
-1. make_dummy_raw_episode for data/raw_dummy/episode_000000.
-2. raw_to_processed for data/processed_dummy/episode_000000.
-3. plan_lerobot_export for forcevla_13d.
-4. stage_lerobot_export for forcevla_13d.
-5. write_lerobot_skeleton for forcevla_13d with image-mode symlink and --overwrite.
-6. validate_lerobot_skeleton.
-7. preflight_real_export with JSON output to data/lerobot_dummy/forcevla_13d/preflight_report.json.
-
-Result:
-All manual commands succeeded.
-
-Laptop preflight output summary
--------------------------------
-Skeleton:
-data/lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0
-
-Observed report:
-1. profile: forcevla_13d
-2. total_frames: 19
-3. state_dim: 13
-4. action_dim: 7
-5. skeleton_valid: true
-6. schema_valid: true
-7. prompt_task_compatible: true
-8. image_staging_complete: true
-9. observation.image files: 19
-10. observation.wrist_image files: 19
-11. symlinked image files: 38
-12. regular image files: 0
-13. parquet_ready: false
-14. video_ready: true
-15. lerobot_api_available: false
-16. real_export_ready: false
-17. video_export_ready: true
-
-Readiness interpretation on laptop
-----------------------------------
-1. parquet_ready is false because pyarrow is not importable on the laptop.
-2. video_ready is true because ffmpeg is available and cv2/PIL are importable.
-3. real_export_ready is false because parquet_ready is false.
-4. video_export_ready is true for the skeleton and current laptop dependencies, but videos are still not encoded in this step.
-5. Lab workstation preflight is still required and is the relevant compatibility check for ForceVLA.
+Passed. Ran 28 tests. Result OK.
 
 Known limitations
 -----------------
-1. No parquet is written.
-2. No videos are encoded.
-3. No real LeRobot writer exists yet.
-4. No LeRobot API is imported or used.
-5. No Hugging Face upload path exists.
-6. No any4lerobot integration exists.
-7. No ROS recorder exists.
-8. image shape remains null in skeleton metadata because real camera resolution is not established here.
-9. Laptop dependency results are informational only.
-10. ForceVLA loader, normalization-statistics, and training checks have not been run.
-11. Lab workstation dependency/preflight checks are still required.
+1. This task created documentation only.
+2. Lab workstation validation has not been run yet.
+3. ForceVLA loader, normalization-statistics, and training checks remain pending.
+4. No real robot recording should start until the dummy export/load path is validated on the lab workstation.
 
 Exact next recommended task
 ---------------------------
-Run the dependency check and real-export preflight on the lab workstation inside the validated ForceVLA environment. Use those lab results to decide whether the first real writer should use pyarrow directly or LeRobot APIs, then implement a real local parquet/video writer that still avoids Hugging Face upload, ROS recording, any4lerobot integration, and package installation unless explicitly approved.
-
-Final summary
--------------
-The repository remains standard-library-only on the laptop and now has a complete read-only readiness gate before real parquet/video export:
-
-raw dummy episode -> validate raw -> convert to processed JSONL -> validate processed -> inspect processed -> plan dry-run export -> validate export plan -> stage export JSONL -> validate staged export -> write LeRobot skeleton -> validate LeRobot skeleton -> dependency check -> real-export preflight
-
-The first/default target remains forcevla_13d. doosan_full_25d remains supported as secondary. The primary learning action label remains measured TCP delta from robot state, independent of demonstration method.
+Transfer or pull this repository on the lab workstation, activate the validated ForceVLA environment, run the checklist commands in docs/lab_workstation_validation_checklist.md, and paste back the unittest output, dependency check output, preflight report JSON, and export attempt report JSON.

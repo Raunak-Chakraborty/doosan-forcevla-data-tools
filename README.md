@@ -55,6 +55,7 @@ This repository currently provides:
 - a local LeRobot-style skeleton writer with JSONL placeholder records and staged image references
 - a dependency preflight CLI for future real parquet/video export
 - a real-export preflight CLI that checks skeleton schema, image staging, prompt/task compatibility, and dependency readiness
+- a dependency-optional local real-export writer scaffold with dry-run and write-if-available modes
 - standard-library `unittest` tests
 
 ## Current Pipeline Status
@@ -62,7 +63,7 @@ This repository currently provides:
 The current v0 pipeline is:
 
 ```text
-raw dummy episode -> validate raw -> convert to processed -> validate processed -> inspect processed -> plan dry-run export -> validate export plan -> stage export JSONL -> validate staged export -> write LeRobot skeleton -> validate LeRobot skeleton -> preflight real export
+raw dummy episode -> validate raw -> convert to processed -> validate processed -> inspect processed -> plan dry-run export -> validate export plan -> stage export JSONL -> validate staged export -> write LeRobot skeleton -> validate LeRobot skeleton -> preflight real export -> attempt local real export
 ```
 
 Example commands:
@@ -168,9 +169,31 @@ PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.preflight_real_export dat
 
 The preflight validates the skeleton, checks schema and prompt/task compatibility, counts staged images, checks dependency availability, and reports parquet/video readiness. It does not write parquet or videos. Run it on the laptop for local awareness, then run it again on the lab workstation inside the validated ForceVLA environment.
 
+## Local Real Export Attempt
+
+Run a dry run that writes only `export_attempt_report.json`:
+
+```bash
+PYTHONPATH=src python3 -m doosan_forcevla_data.convert.write_real_lerobot_export --skeleton data/lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0 --output data/real_lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0 --mode dry-run
+PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_real_lerobot_export_attempt data/real_lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0
+```
+
+Attempt metadata, parquet, and video outputs only when dependencies are available:
+
+```bash
+PYTHONPATH=src python3 -m doosan_forcevla_data.convert.write_real_lerobot_export --skeleton data/lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0 --output data/real_lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0 --mode write-if-available
+PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_real_lerobot_export_attempt data/real_lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0
+```
+
+In `dry-run` mode, no metadata, parquet, videos, or images are copied. In `write-if-available` mode, metadata is written, parquet is written only if `pyarrow` is available, and videos are attempted only if video dependencies are available. Missing laptop dependencies are fine; the report says exactly what was skipped. Run the same command later on the lab workstation inside the validated ForceVLA environment.
+
 ## Real LeRobot Writer Design
 
 The first real writer design is documented in `docs/real_lerobot_writer_design.md`. The concrete schema decision before real parquet/video work is documented in `docs/real_lerobot_schema_decision.md`. The first target remains `forcevla_13d`, with `doosan_full_25d` kept as a secondary full-proprioception target.
+
+## Lab Workstation Validation
+
+See `docs/lab_workstation_validation_checklist.md` for the lab workstation validation workflow using the validated ForceVLA environment.
 
 ## Limitations
 
@@ -185,6 +208,7 @@ The first real writer design is documented in `docs/real_lerobot_writer_design.m
 - The staged export writes inspectable JSONL records only; it still does not create training-ready LeRobot data.
 - The LeRobot skeleton writer creates v2.1-style folders, JSONL placeholder records, and staged images only; it still does not write parquet or encode videos.
 - The real-export preflight checks readiness only; it does not write parquet or videos.
+- The local real-export writer scaffold is dependency-optional; it may skip parquet or videos and report why.
 - Laptop dependency availability is informative only; real ForceVLA loader and training compatibility must be checked on the lab workstation.
 
 ## Example Commands
@@ -210,6 +234,10 @@ PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_staged_export d
 PYTHONPATH=src python3 -m doosan_forcevla_data.convert.write_lerobot_skeleton --staged data/staged_dummy/forcevla_13d/episode_000000 --output data/lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0 --episode-index 0 --task-index 0 --profile forcevla_13d --image-mode symlink --overwrite
 PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_lerobot_skeleton data/lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0
 PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.preflight_real_export data/lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0 --output data/lerobot_dummy/forcevla_13d/preflight_report.json
+PYTHONPATH=src python3 -m doosan_forcevla_data.convert.write_real_lerobot_export --skeleton data/lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0 --output data/real_lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0 --mode dry-run
+PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_real_lerobot_export_attempt data/real_lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0
+PYTHONPATH=src python3 -m doosan_forcevla_data.convert.write_real_lerobot_export --skeleton data/lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0 --output data/real_lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0 --mode write-if-available
+PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_real_lerobot_export_attempt data/real_lerobot_dummy/forcevla_13d/doosan_peg_in_hole_v0
 PYTHONPATH=src python3 -m doosan_forcevla_data.convert.write_lerobot_skeleton --staged data/staged_dummy/doosan_full_25d/episode_000000 --output data/lerobot_dummy/doosan_full_25d/doosan_peg_in_hole_v0 --episode-index 0 --task-index 0 --profile doosan_full_25d --image-mode copy --overwrite
 PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_lerobot_skeleton data/lerobot_dummy/doosan_full_25d/doosan_peg_in_hole_v0
 ```

@@ -1,0 +1,411 @@
+cat > ~/robotics_thesis/doosan_ros2_commands.txt <<'EOF'
+# Doosan ROS 2 / MoveIt / Gazebo Command Reference
+# Workspace: ~/robotics_thesis/robotics_ws
+# ROS distro: Jazzy
+
+# ============================================================
+# 0. Basic terminal setup
+# ============================================================
+
+# Go to workspace
+cd ~/robotics_thesis/robotics_ws
+
+# Manually source ROS 2 and workspace, only needed if .bashrc is not set
+source /opt/ros/jazzy/setup.bash
+source ~/robotics_thesis/robotics_ws/install/setup.bash
+
+# Check ROS distro
+echo $ROS_DISTRO
+
+# Check ROS executable
+which ros2
+
+# Check Doosan packages are visible
+ros2 pkg list | grep dsr
+
+
+# ============================================================
+# 1. Package and workspace checks
+# ============================================================
+
+# Check system dependencies
+cd ~/robotics_thesis/robotics_ws
+rosdep check --from-paths src --ignore-src --rosdistro jazzy
+
+# Install missing system dependencies
+cd ~/robotics_thesis/robotics_ws
+rosdep install --from-paths src --ignore-src --rosdistro jazzy -y
+
+# Build whole workspace
+cd ~/robotics_thesis/robotics_ws
+colcon build --symlink-install
+
+# Clean rebuild whole workspace
+cd ~/robotics_thesis/robotics_ws
+rm -rf build install log
+colcon build --symlink-install
+source install/setup.bash
+
+# Build only selected packages and dependencies
+cd ~/robotics_thesis/robotics_ws
+colcon build --symlink-install --packages-up-to dsr_bringup2 dsr_controller2 dsr_description2 dsr_moveit_config_m1013
+
+# Show build result summary
+cd ~/robotics_thesis/robotics_ws
+colcon list | grep dsr
+
+
+# ============================================================
+# 2. Git commands for Doosan repo
+# ============================================================
+
+# Go to Doosan source repo
+cd ~/robotics_thesis/robotics_ws/src/doosan-robot2
+
+# Check branch
+git branch --show-current
+
+# Check status
+git status
+
+# Switch to Jazzy branch
+git switch jazzy
+
+# Show latest commit
+git log --oneline -5
+
+# Show available branches with jazzy in name
+git branch -a | grep -i jazzy
+
+
+# ============================================================
+# 3. Robot model files
+# ============================================================
+
+cd ~/robotics_thesis/robotics_ws/src/doosan-robot2
+
+# Check M1013 URDF parses correctly
+check_urdf dsr_description2/urdf/m1013.urdf
+
+# List M1013 joints in URDF
+grep -n "<joint name=" dsr_description2/urdf/m1013.urdf
+
+# List M1013 links in URDF
+grep -n "<link name=" dsr_description2/urdf/m1013.urdf
+
+# Search TCP/tool/flange/base references
+grep -niE "tcp|tool|flange|link6|base" dsr_description2/urdf/m1013.urdf
+
+# Open main M1013 xacro
+sed -n '1,240p' dsr_description2/xacro/m1013.urdf.xacro
+
+# Open normal ros2_control xacro
+sed -n '1,240p' dsr_description2/ros2_control/m1013.ros2_control.xacro
+
+# Open Gazebo ros2_control xacro
+sed -n '1,240p' dsr_description2/ros2_control/m1013.gz_ros2_control.xacro
+
+# Find robot description, mesh, launch, RViz files
+find . -maxdepth 5 -type f | grep -Ei "m1013|xacro|urdf|dae|stl|rviz|launch|srdf"
+
+
+# ============================================================
+# 4. Launch robot in RViz with virtual Doosan emulator
+# ============================================================
+
+# Main launch command for M1013 in virtual mode
+cd ~/robotics_thesis/robotics_ws
+ros2 launch dsr_bringup2 dsr_bringup2_rviz.launch.py model:=m1013 mode:=virtual color:=white
+
+# Same launch but blue robot
+cd ~/robotics_thesis/robotics_ws
+ros2 launch dsr_bringup2 dsr_bringup2_rviz.launch.py model:=m1013 mode:=virtual color:=blue
+
+# Launch with namespace explicitly set
+cd ~/robotics_thesis/robotics_ws
+ros2 launch dsr_bringup2 dsr_bringup2_rviz.launch.py name:=dsr01 model:=m1013 mode:=virtual color:=white
+
+# Launch without remapping tf
+cd ~/robotics_thesis/robotics_ws
+ros2 launch dsr_bringup2 dsr_bringup2_rviz.launch.py model:=m1013 mode:=virtual color:=white remap_tf:=false
+
+
+# ============================================================
+# 5. Check running ROS system from a second terminal
+# ============================================================
+
+# List running nodes
+ros2 node list
+
+# List topics
+ros2 topic list
+
+# List services
+ros2 service list
+
+# List actions
+ros2 action list
+
+# Show active controllers
+ros2 control list_controllers -c /dsr01/controller_manager
+
+# Show hardware interfaces
+ros2 control list_hardware_interfaces -c /dsr01/controller_manager
+
+# Show joint states once
+ros2 topic echo /dsr01/joint_states --once
+
+# Show robot description once
+ros2 topic echo /dsr01/robot_description --once
+
+# Show TF topics
+ros2 topic echo /tf --once
+ros2 topic echo /tf_static --once
+
+# Show node info
+ros2 node info /dsr01/dsr_controller2
+ros2 node info /dsr01/robot_state_publisher
+ros2 node info /dsr01/controller_manager
+
+# Show topic information
+ros2 topic info /dsr01/joint_states
+ros2 topic info /tf
+
+
+# ============================================================
+# 6. Useful Doosan services and interfaces
+# ============================================================
+
+# List Doosan controller services
+ros2 service list | grep dsr_controller2
+
+# List Doosan messages
+ros2 interface list | grep dsr_msgs2/msg
+
+# List Doosan services
+ros2 interface list | grep dsr_msgs2/srv
+
+# List Doosan actions
+ros2 interface list | grep dsr_msgs2/action
+
+# Inspect important service definitions
+ros2 interface show dsr_msgs2/srv/GetCurrentPose
+ros2 interface show dsr_msgs2/srv/GetCurrentPosj
+ros2 interface show dsr_msgs2/srv/MoveJoint
+ros2 interface show dsr_msgs2/srv/MoveLine
+ros2 interface show dsr_msgs2/srv/TaskComplianceCtrl
+ros2 interface show dsr_msgs2/srv/SetDesiredForce
+ros2 interface show dsr_msgs2/srv/CheckForceCondition
+
+# Inspect important message definitions
+ros2 interface show dsr_msgs2/msg/RobotState
+ros2 interface show dsr_msgs2/msg/RobotStateRt
+ros2 interface show dsr_msgs2/msg/ServolStream
+ros2 interface show dsr_msgs2/msg/ServojStream
+ros2 interface show dsr_msgs2/msg/SpeedlStream
+ros2 interface show dsr_msgs2/msg/SpeedjStream
+
+
+# ============================================================
+# 7. RViz only / visualization checks
+# ============================================================
+
+# Start RViz directly
+rviz2
+
+# Check RViz executable
+which rviz2
+
+# Check OpenGL renderer
+glxinfo | grep -Ei "OpenGL vendor|OpenGL renderer|OpenGL version"
+
+# Check Vulkan summary
+vulkaninfo --summary | head -40
+
+
+# ============================================================
+# 8. MoveIt files to inspect
+# ============================================================
+
+cd ~/robotics_thesis/robotics_ws/src/doosan-robot2
+
+# Main MoveIt launch files
+sed -n '1,240p' dsr_moveit2/dsr_moveit_config_m1013/launch/demo.launch.py
+sed -n '1,240p' dsr_moveit2/dsr_moveit_config_m1013/launch/start.launch.py
+
+# Semantic robot description
+sed -n '1,240p' dsr_moveit2/dsr_moveit_config_m1013/config/dsr.srdf.xacro
+
+# Joint limits used by MoveIt
+sed -n '1,240p' dsr_moveit2/dsr_moveit_config_m1013/config/joint_limits.yaml
+
+# Kinematics solver settings
+sed -n '1,240p' dsr_moveit2/dsr_moveit_config_m1013/config/kinematics.yaml
+
+# OMPL planner settings
+sed -n '1,240p' dsr_moveit2/dsr_moveit_config_m1013/config/ompl_planning.yaml
+
+# MoveIt controller mapping
+sed -n '1,240p' dsr_moveit2/dsr_moveit_config_m1013/config/moveit_controllers.yaml
+
+# ros2_control controllers used by MoveIt
+sed -n '1,240p' dsr_moveit2/dsr_moveit_config_m1013/config/ros2_controllers.yaml
+
+# Initial joint positions
+sed -n '1,240p' dsr_moveit2/dsr_moveit_config_m1013/config/initial_positions.yaml
+
+# 3D sensor configuration
+sed -n '1,240p' dsr_moveit2/dsr_moveit_config_m1013/config/sensors_3d.yaml
+
+
+# ============================================================
+# 9. Try MoveIt demo
+# ============================================================
+
+# Launch M1013 MoveIt demo
+cd ~/robotics_thesis/robotics_ws
+ros2 launch dsr_moveit_config_m1013 demo.launch.py
+
+# Launch M1013 MoveIt start file
+cd ~/robotics_thesis/robotics_ws
+ros2 launch dsr_moveit_config_m1013 start.launch.py
+
+
+# ============================================================
+# 10. Gazebo / GZ simulation commands
+# ============================================================
+
+# Check Gazebo/GZ packages
+ros2 pkg list | grep -Ei "gazebo|gz"
+
+# Launch Doosan Gazebo if needed
+cd ~/robotics_thesis/robotics_ws
+ros2 launch dsr_bringup2 dsr_bringup2_gazebo.launch.py model:=m1013 mode:=virtual color:=white
+
+# Launch Doosan spawn on Gazebo if needed
+cd ~/robotics_thesis/robotics_ws
+ros2 launch dsr_bringup2 dsr_bringup2_spawn_on_gazebo.launch.py model:=m1013 mode:=virtual color:=white
+
+
+# ============================================================
+# 11. Docker emulator checks
+# ============================================================
+
+# List running containers
+docker ps
+
+# List all containers
+docker ps -a
+
+# Stop Doosan emulator container
+docker stop dsr01_emulator
+
+# Remove stopped Doosan emulator container if needed
+docker rm dsr01_emulator
+
+# Check downloaded Doosan emulator image
+docker images | grep doosan
+
+# Pull emulator manually
+docker pull doosanrobot/dsr_emulator:3.0.1
+
+
+# ============================================================
+# 12. Logs and debugging
+# ============================================================
+
+# Open ROS log folder
+cd ~/.ros/log
+
+# Show latest log folders
+ls -lt ~/.ros/log | head
+
+# Go to newest log folder
+cd "$(ls -td ~/.ros/log/*/ | head -1)"
+pwd
+ls
+
+# Find errors in latest log folder
+grep -RniE "error|fatal|exception|failed|abort" "$(ls -td ~/.ros/log/*/ | head -1)"
+
+# Find warnings in latest log folder
+grep -Rni "warn" "$(ls -td ~/.ros/log/*/ | head -1)"
+
+# ROS doctor
+ros2 doctor
+
+# More detailed ROS doctor report
+ros2 doctor --report
+
+
+# ============================================================
+# 13. Filesystem locations
+# ============================================================
+
+# Thesis root
+cd ~/robotics_thesis
+
+# ROS workspace
+cd ~/robotics_thesis/robotics_ws
+
+# Doosan repo
+cd ~/robotics_thesis/robotics_ws/src/doosan-robot2
+
+# Data folders
+cd ~/robotics_thesis/thesis_data
+cd ~/robotics_thesis/datasets
+
+# Show disk usage
+df -h
+
+# Show size of robotics thesis folder
+du -sh ~/robotics_thesis
+
+# Show largest folders inside robotics thesis
+du -h --max-depth=2 ~/robotics_thesis | sort -h | tail -30
+
+
+# ============================================================
+# 14. Turtlesim ROS 2 beginner test
+# ============================================================
+
+# Check if turtlesim is installed
+ros2 pkg list | grep turtlesim
+
+# Install turtlesim if missing
+sudo apt install ros-jazzy-turtlesim
+
+# Terminal 1: start turtlesim
+ros2 run turtlesim turtlesim_node
+
+# Terminal 2: keyboard control
+ros2 run turtlesim turtle_teleop_key
+
+# Inspect turtlesim topics
+ros2 topic list
+ros2 topic echo /turtle1/pose
+EOF
+
+####################################################################################################################################################
+
+Terminal 1 : launch robot + RViz  :
+cd ~/robotics_thesis/robotics_ws
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 launch dsr_moveit_config_m1013 start.launch.py name:=dsr01 model:=m1013 mode:=virtual color:=white gui:=true
+
+Terminal 2 : monitor robot state
+cd ~/robotics_thesis/robotics_ws
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+ros2 run doosan_thesis_tools monitor_state --ros-args -p rate_hz:=1.0
+
+Terminal 3 :
+cd ~/robotics_thesis/robotics_ws
+ros2 run doosan_thesis_tools baseline_approach_demo --ros-args -p execute:=true
+
+
+
+#####################################################################################################
+
+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

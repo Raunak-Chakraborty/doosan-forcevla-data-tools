@@ -1,0 +1,49 @@
+# Example camera stream config for future raw real episodes.
+# Camera topics are unknown from static inspection and must be verified live.
+schema_version: raw_camera_streams_v0
+
+streams:
+  external_camera:
+    role: observation.image
+    source_name: unknown
+    source_type: sensor_msgs/msg/Image
+    required: true
+    verified: false
+    encoding: unknown
+    expected_width: null
+    expected_height: null
+    expected_fps: null
+    frame_id: unknown
+    camera_id: unknown
+    intrinsics_id: unknown
+    extrinsics_id: unknown
+    notes: External camera topic, frame, calibration, timestamp source, and QoS are unverified.
+  wrist_camera:
+    role: observation.wrist_image
+    source_name: unknown
+    source_type: sensor_msgs/msg/Image
+    required: true
+    verified: false
+    encoding: unknown
+    expected_width: null
+    expected_height: null
+    expected_fps: null
+    frame_id: unknown
+    camera_id: unknown
+    intrinsics_id: unknown
+    extrinsics_id: unknown
+    notes: Wrist/TCP camera topic, frame, calibration, timestamp source, and QoS are unverified.
+
+storage:
+  first_choice: image_frames_with_index
+  allowed:
+    - image_frames_with_index
+    - chunked_video_with_precise_index
+  index_file: index.jsonl
+  image_path_policy: relative_to_episode_root
+
+timestamp_policy:
+  require_source_stamp: true
+  require_receipt_stamp: true
+  require_monotonic_stamp: true
+  verified_time_sync: false

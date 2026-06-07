@@ -1,0 +1,60 @@
+# Example unit/frame conventions for future raw real episodes.
+# Raw source conventions are candidates until lab verification confirms them.
+schema_version: raw_unit_frame_conventions_v0
+
+processed_targets:
+  tcp_translation_units: meters
+  joint_position_units: radians
+  joint_velocity_units: radians_per_second
+  orientation_quaternion_convention: xyzw
+  action_rotation_representation: rotation_vector
+  action_shape: 7
+
+raw_candidates:
+  doosan_robot_state_rt:
+    tcp_translation_units: millimeters
+    tcp_orientation_units: degrees
+    tcp_orientation_convention: unknown_verify_euler_order
+    joint_position_units: degrees
+    joint_velocity_units: degrees_per_second
+    force_units: N
+    torque_units: Nm
+    verified: false
+  joint_states_topic:
+    joint_position_units: radians
+    joint_velocity_units: radians_per_second
+    effort_units: unknown
+    verified: false
+
+frames:
+  base_frame:
+    name: unknown
+    verified: false
+  tcp_frame:
+    name: unknown
+    verified: false
+    notes: TCP/flange/tool frame ambiguity must be resolved in lab.
+  flange_frame:
+    name: unknown
+    verified: false
+  tool_frame:
+    name: unknown
+    verified: false
+  external_camera_frame:
+    name: unknown
+    verified: false
+  wrist_camera_frame:
+    name: unknown
+    verified: false
+  force_torque_frame:
+    name: unknown
+    verified: false
+    notes: Force-torque frame and sign convention are unknown.
+
+conversion_policy:
+  compute_action_from: measured_consecutive_tcp_pose
+  command_streams_are_labels: false
+  terminal_padding_action: [0, 0, 0, 0, 0, 0, 0]
+  normalize_tcp_translation_to_meters: true
+  normalize_joint_positions_to_radians: true
+  verify_quaternion_conversion_before_training: true

@@ -1,0 +1,39 @@
+# Example episode metadata defaults for future raw real episodes.
+schema_version: raw_episode_metadata_defaults_v0
+raw_real_schema_version: raw_real_v0
+
+dataset_name: doosan_peg_in_hole_v0
+robot_type: doosan_m1013
+task_instruction: Insert the peg into the hole.
+geometry_type: round_peg_round_hole
+orientation_type: vertical_insertion
+collection_method: unknown_real_collection_method
+action_label_primary: measured_tcp_delta
+success: false
+failure_reason: null
+fps: 30
+
+operator_id: unknown
+site: lab_workstation
+recorder_version: unknown
+calibration_version: unknown
+
+source_workspace:
+  path: /home/horus/robotics_thesis/lab_myros2_ws
+  git_commit: unknown
+  git_remote: unknown
+  git_branch: unknown
+  verified: false
+  notes: Static inspection found no Git metadata in the lab workspace copy.
+
+live_graph_verification:
+  exact_doosan_namespace: unknown
+  external_camera_topic: unknown
+  wrist_camera_topic: unknown
+  read_data_rt_service: unknown
+  tcp_frame: unknown
+  flange_frame: unknown
+  tool_frame: unknown
+  force_torque_source: unknown
+  gripper_state_source: unknown
+  time_sync_verified: false

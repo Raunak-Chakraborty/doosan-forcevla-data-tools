@@ -1,0 +1,84 @@
+# Example raw recorder topic/service map for future lab verification.
+# This file is offline documentation/config only; it is not ROS2 code.
+schema_version: raw_recorder_topic_map_v0
+namespace:
+  value: unknown
+  verified: false
+  notes: Exact Doosan namespace must be verified on the lab workstation.
+
+topics:
+  joint_states:
+    source_name: /dsr01/joint_states
+    source_type: sensor_msgs/msg/JointState
+    required: true
+    verified: false
+    notes: Candidate only; exact namespace and populated velocity/effort fields must be verified live.
+  tf:
+    source_name: /tf
+    source_type: tf2_msgs/msg/TFMessage
+    required: true
+    verified: false
+  tf_static:
+    source_name: /tf_static
+    source_type: tf2_msgs/msg/TFMessage
+    required: true
+    verified: false
+  external_camera:
+    source_name: unknown
+    source_type: sensor_msgs/msg/Image
+    required: true
+    verified: false
+    notes: Real external camera topic, encoding, frame_id, QoS, FPS, and resolution are unknown.
+  wrist_camera:
+    source_name: unknown
+    source_type: sensor_msgs/msg/Image
+    required: true
+    verified: false
+    notes: Real wrist/TCP camera topic, encoding, frame_id, QoS, FPS, and resolution are unknown.
+  commanded_teleop_twist:
+    source_name: /doosan_teleop/cmd_vel_6d
+    source_type: geometry_msgs/msg/Twist
+    required: false
+    verified: false
+    notes: Command context only; never use as the measured action label.
+  moveit_servo_twist:
+    source_name: /dsr01/servo_node/delta_twist_cmds
+    source_type: geometry_msgs/msg/TwistStamped
+    required: false
+    verified: false
+    notes: Command context only; exact namespace must be verified.
+  moveit_joint_trajectory:
+    source_name: /dsr01/dsr_moveit_controller/joint_trajectory
+    source_type: trajectory_msgs/msg/JointTrajectory
+    required: false
+    verified: false
+    notes: Command context only; exact namespace must be verified.
+
+services:
+  read_data_rt:
+    source_name: unknown
+    candidate_source_name: /dsr01/realtime/read_data_rt
+    source_type: dsr_msgs2/srv/ReadDataRt
+    returns_type: dsr_msgs2/msg/RobotStateRt
+    required: true
+    read_only_candidate: true
+    verified: false
+    notes: Exact service path, availability, safe polling rate, and read-only behavior must be verified in lab.
+  get_current_posx:
+    source_name: unknown
+    source_type: dsr_msgs2/srv/GetCurrentPosx
+    required: false
+    read_only_candidate: true
+    verified: false
+  get_tool_force:
+    source_name: unknown
+    source_type: dsr_msgs2/srv/GetToolForce
+    required: false
+    read_only_candidate: true
+    verified: false
+  gripper_state:
+    source_name: unknown
+    source_type: unknown
+    required: false
+    verified: false
+    notes: Gripper state source is unknown; may be controller state, action feedback, IO, Modbus, or a separate driver.

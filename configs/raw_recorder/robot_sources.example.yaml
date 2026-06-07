@@ -1,0 +1,88 @@
+# Example robot source selection for future raw real episodes.
+# Candidate names are placeholders until the live lab ROS graph is verified.
+schema_version: raw_robot_sources_v0
+robot_model: doosan_m1013
+
+primary_robot_state_source:
+  kind: read_data_rt
+  selected: false
+  source_name: unknown
+  source_type: dsr_msgs2/srv/ReadDataRt
+  returns_type: dsr_msgs2/msg/RobotStateRt
+  verified: false
+  reason: Candidate high-value source; exact service path, availability, rate, timestamp, and safety must be verified.
+
+joint_state_source:
+  kind: joint_states_topic
+  selected: true
+  source_name: /dsr01/joint_states
+  source_type: sensor_msgs/msg/JointState
+  fallback: robot_state_rt.actual_joint_position
+  verified: false
+  notes: Exact namespace and units must be checked against RobotStateRt.
+
+tcp_pose_source:
+  kind: robot_state_rt.actual_tcp_position
+  selected: true
+  source_name: unknown
+  fallback: aux_control/get_current_posx
+  verified: false
+  notes: TCP frame, active tool/TCP config, and Euler convention are unknown.
+
+flange_pose_source:
+  kind: robot_state_rt.actual_flange_position
+  selected: false
+  source_name: unknown
+  verified: false
+  notes: Optional audit source for TCP/flange/tool ambiguity.
+
+wrench_source:
+  kind: unknown
+  selected: false
+  source_name: unknown
+  verified: false
+  candidates:
+    - robot_state_rt.external_tcp_force
+    - robot_state_rt.raw_force_torque
+    - aux_control/get_tool_force
+  reason: Force-torque frame, sign convention, filtering, and compensation are unknown.
+
+robot_mode_state_source:
+  kind: robot_state_rt
+  selected: true
+  fields:
+    - robot_mode
+    - robot_state
+    - control_mode
+  verified: false
+
+gripper_state_source:
+  kind: unknown
+  selected: false
+  source_name: unknown
+  source_type: unknown
+  verified: false
+  notes: Gripper model, state topic/action/service, IO/Modbus mapping, and units are unknown.
+
+command_context_sources:
+  - name: commanded_teleop_twist
+    source_name: /doosan_teleop/cmd_vel_6d
+    source_type: geometry_msgs/msg/Twist
+    verified: false
+    label_source: false
+  - name: moveit_servo_twist
+    source_name: /dsr01/servo_node/delta_twist_cmds
+    source_type: geometry_msgs/msg/TwistStamped
+    verified: false
+    label_source: false
+  - name: moveit_joint_trajectory
+    source_name: /dsr01/dsr_moveit_controller/joint_trajectory
+    source_type: trajectory_msgs/msg/JointTrajectory
+    verified: false
+    label_source: false
+  - name: jog_multi_requests
+    source_name: unknown
+    source_type: dsr_msgs2/srv/JogMulti
+    verified: false
+    label_source: false
+    notes: Only log if wrapped by a recorder-side passive/request logger; do not call motion services from offline tools.

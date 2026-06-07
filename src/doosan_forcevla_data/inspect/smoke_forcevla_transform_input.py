@@ -22,6 +22,8 @@ from typing import Any
 
 import numpy as np
 
+from doosan_forcevla_data.convert.action_chunks import build_future_action_chunk_from_lerobot_export
+
 from doosan_forcevla_data.inspect.smoke_forcevla_observation_builder import build_smoke_observation
 
 
@@ -105,8 +107,8 @@ def build_forcevla_transform_input_report(
     Real training should use a real action horizon from consecutive frames.
     """
 
-    if action_chunk_mode not in {"single", "repeat"}:
-        raise ValueError("action_chunk_mode must be 'single' or 'repeat'")
+    if action_chunk_mode not in {"single", "repeat", "future"}:
+        raise ValueError("action_chunk_mode must be 'single', 'repeat', or 'future'")
 
     forcevla_root = Path(forcevla_root or os.environ.get("FORCEVLA_ROOT") or _default_forcevla_root())
     forcevla_root, _model, pi0_force, forcevla_policy = _require_forcevla_modules(forcevla_root)
@@ -133,10 +135,49 @@ def build_forcevla_transform_input_report(
     model_type = model_config.model_type
 
     raw_action = np.asarray(observation["action"], dtype=np.float32)
-    if action_chunk_mode == "repeat":
+    action_chunk_report = None
+    if action_chunk_mode == "future":
+        action_chunk = build_future_action_chunk_from_lerobot_export(
+            dataset_root=dataset_root,
+            episode_index=episode_index,
+            row_index=row_index,
+            horizon=action_horizon,
+            action_dim=7,
+            pad_mode="repeat_last",
+        )
+        actions = np.asarray(action_chunk.actions, dtype=np.float32)
+        action_chunk_report = {
+            "mode": "future",
+            "horizon": action_chunk.horizon,
+            "action_dim": action_chunk.action_dim,
+            "source_action_count": action_chunk.source_action_count,
+            "valid_count": int(sum(action_chunk.valid_mask)),
+            "padded_count": action_chunk.padded_count,
+            "pad_mode": action_chunk.pad_mode,
+            "valid_mask_first_20": action_chunk.valid_mask[:20],
+        }
+    elif action_chunk_mode == "repeat":
         actions = np.repeat(raw_action[None, :], action_horizon, axis=0)
+        action_chunk_report = {
+            "mode": "repeat",
+            "horizon": action_horizon,
+            "action_dim": int(raw_action.shape[-1]),
+            "source_action_count": 1,
+            "valid_count": action_horizon,
+            "padded_count": 0,
+            "pad_mode": "repeat_current_action",
+        }
     else:
         actions = raw_action
+        action_chunk_report = {
+            "mode": "single",
+            "horizon": 1,
+            "action_dim": int(raw_action.shape[-1]),
+            "source_action_count": 1,
+            "valid_count": 1,
+            "padded_count": 0,
+            "pad_mode": "none",
+        }
 
     policy_input = {
         "image": np.asarray(observation["observation.image"]),
@@ -236,6 +277,7 @@ def build_forcevla_transform_input_report(
             "wrist_image": _array_summary(policy_input["wrist_image"]),
             "state": _array_summary(policy_input["state"]),
             "actions": _array_summary(policy_input["actions"]),
+            "action_chunk": action_chunk_report,
             "prompt": policy_input["prompt"],
         },
         "transformed": {
@@ -257,7 +299,7 @@ def build_forcevla_transform_input_report(
         "errors": errors,
         "notes": [
             "This smoke test stops before tokenization and model inference.",
-            "A repeated action chunk is only used for shape validation; real training needs real future action chunks.",
+            "Use --action-chunk-mode future for real future action chunks; repeat/single are debug modes.",
             "Dummy videos may be 16x16 while real exports should be 480x640 before model resizing.",
         ],
     }
@@ -272,7 +314,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--forcevla-root", default=None)
     parser.add_argument("--episode-index", type=int, default=0)
     parser.add_argument("--row-index", type=int, default=0)
-    parser.add_argument("--action-chunk-mode", choices=["single", "repeat"], default="repeat")
+    parser.add_argument("--action-chunk-mode", choices=["single", "repeat", "future"], default="future")
     parser.add_argument("--output", default=None)
     args = parser.parse_args(argv)
 

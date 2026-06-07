@@ -57,9 +57,25 @@ def _check_python() -> dict[str, object]:
 
 def _check_ffmpeg() -> dict[str, object]:
     path = shutil.which("ffmpeg")
-    if path is None:
-        return {"available": False, "version": None, "detail": "ffmpeg command not found on PATH"}
-    return {"available": True, "version": None, "detail": f"ffmpeg command found at {path}"}
+    if path is not None:
+        return {"available": True, "version": None, "detail": f"ffmpeg command found at {path}"}
+
+    try:
+        imageio_ffmpeg = importlib.import_module("imageio_ffmpeg")
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception as exc:
+        return {
+            "available": False,
+            "version": None,
+            "detail": f"ffmpeg command not found on PATH and imageio_ffmpeg is unavailable: {exc}",
+        }
+
+    version = _version_from_distribution("imageio-ffmpeg")
+    return {
+        "available": True,
+        "version": version,
+        "detail": f"ffmpeg command not on PATH; using imageio_ffmpeg executable at {ffmpeg_exe}",
+    }
 
 
 def check_export_dependencies() -> dict[str, dict[str, object]]:

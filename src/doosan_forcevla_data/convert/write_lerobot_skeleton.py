@@ -144,11 +144,29 @@ def _staged_image_relative_path(
     return target.relative_to(output_root).as_posix()
 
 
+def _camera_feature(storage: str = "video") -> dict[str, Any]:
+    """Return a LeRobot v2.1-compatible camera feature entry.
+
+    The real export target stores RGB streams as MP4 videos.  The skeleton still
+    keeps staged image files for inspection/encoding, but the final dataset
+    metadata should use a real LeRobot camera dtype, not a private
+    ``image_reference`` placeholder.
+    """
+
+    if storage not in {"image", "video"}:
+        raise ValueError(f"unsupported camera storage: {storage}")
+    return {
+        "dtype": storage,
+        "shape": [480, 640, 3],
+        "names": ["height", "width", "channels"],
+    }
+
+
 def _features_for_profile(profile: str) -> dict[str, dict[str, Any]]:
     state_dim = _state_dim_for_profile(profile)
     return {
-        "observation.image": {"dtype": "image_reference", "shape": None},
-        "observation.wrist_image": {"dtype": "image_reference", "shape": None},
+        "observation.image": _camera_feature("video"),
+        "observation.wrist_image": _camera_feature("video"),
         "observation.state": {"dtype": "float32", "shape": [state_dim]},
         "action": {"dtype": "float32", "shape": [ACTION_DIM]},
         "timestamp": {"dtype": "float64", "shape": [1]},

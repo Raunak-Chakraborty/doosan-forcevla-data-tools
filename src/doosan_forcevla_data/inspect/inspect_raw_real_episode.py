@@ -18,7 +18,12 @@ from doosan_forcevla_data.schema.raw_real_schema import (
     OPTIONAL_STREAM_NAMES,
     REQUIRED_STREAM_NAMES,
 )
-from doosan_forcevla_data.validate.validate_raw_real_episode import validate_raw_real_episode
+from doosan_forcevla_data.validate.validate_raw_real_episode import (
+    ROTATION_VECTOR_DEGREES,
+    ROTATION_VECTOR_RADIANS,
+    raw_real_conversion_readiness_errors,
+    validate_raw_real_episode,
+)
 
 
 CAMERA_STREAM_NAMES = {"external_camera", "wrist_camera"}
@@ -442,14 +447,11 @@ def _orientation_guard(
     metadata = metadata if isinstance(metadata, dict) else {}
     recorder_report = recorder_report if isinstance(recorder_report, dict) else {}
     convention = metadata.get("tcp_orientation_convention") or recorder_report.get("tcp_orientation_convention")
-    verified = metadata.get("tcp_orientation_convention_verified") or recorder_report.get(
-        "tcp_orientation_convention_verified"
-    )
-    if convention == "rotation_vector_degrees":
+    if convention == ROTATION_VECTOR_DEGREES:
         return "tcp_orientation_convention=rotation_vector_degrees", True
-    if verified is True:
-        return "tcp_orientation_convention_verified=true", True
-    return "non-synthetic episode requires verified TCP orientation convention before conversion", False
+    if convention == ROTATION_VECTOR_RADIANS:
+        return "tcp_orientation_convention=rotation_vector_radians", True
+    return "non-synthetic episode requires explicit rotation-vector TCP orientation convention before conversion", False
 
 
 def _robot_state_summary(
@@ -575,6 +577,7 @@ def _conversion_blockers(
     robot_state_summary: dict[str, Any],
     joint_summary: dict[str, Any],
     wrench_summary: dict[str, Any],
+    conversion_readiness_errors: list[str],
 ) -> list[str]:
     blockers: list[str] = []
     if not validation_ok:
@@ -597,16 +600,13 @@ def _conversion_blockers(
             blockers.append(f"{stream_name} has {summary['unsafe_paths']} unsafe image paths")
     if not robot_state_summary["has_actual_tcp_position"]:
         blockers.append("robot_state_rt does not have valid actual_tcp_position for every record")
-    if not robot_state_summary["has_actual_joint_position"]:
-        blockers.append("robot_state_rt does not have valid actual_joint_position for every record")
-    if not robot_state_summary["has_actual_joint_velocity"]:
-        blockers.append("robot_state_rt does not have valid actual_joint_velocity for every record")
     if not robot_state_summary["orientation_convention_ready"]:
-        blockers.append("TCP orientation convention is not verified for non-synthetic conversion")
+        blockers.append("TCP orientation convention is not explicitly supported for non-synthetic conversion")
     if not joint_summary["has_position"] or not joint_summary["has_velocity"]:
         blockers.append("joint_states does not have valid position and velocity vectors for every record")
     if wrench_summary["valid_wrench_records"] != int(timeline.get("frame_count") or 0):
         blockers.append("robot_state_rt does not have a valid wrench vector for every primary record")
+    blockers.extend(conversion_readiness_errors)
     return _unique_strings(blockers)
 
 
@@ -630,6 +630,8 @@ def _recommendations(
             recommendations.append(f"Fix {stream_name} frame file paths and image files.")
     if any("timestamp" in warning.lower() for warning in validation_warnings):
         recommendations.append("Check camera and robot timestamp synchronization.")
+    if any("source_stamp" in blocker for blocker in conversion_blockers):
+        recommendations.append("Check camera and robot source_stamp synchronization before conversion.")
     if not robot_state_summary["orientation_convention_ready"]:
         recommendations.append("Verify TCP orientation convention before real conversion.")
     if not gripper_summary["present"]:
@@ -710,6 +712,13 @@ def inspect_raw_real_episode(
         streams_summary.get("command_context", {}), records_by_stream.get("command_context", [])
     )
     event_summary, event_read_errors = _event_summary(root)
+    conversion_readiness_errors = raw_real_conversion_readiness_errors(
+        metadata,
+        recorder_report,
+        streams_index,
+        streams,
+        records_by_stream,
+    )
 
     conversion_blockers = _conversion_blockers(
         validation.ok,
@@ -719,6 +728,7 @@ def inspect_raw_real_episode(
         robot_state_summary,
         joint_summary,
         wrench_summary,
+        conversion_readiness_errors,
     )
     ready_for_conversion = validation.ok and not conversion_blockers
     inspection_errors = metadata_errors + recorder_errors + streams_index_errors + stream_read_errors + event_read_errors
@@ -769,6 +779,7 @@ def inspect_raw_real_episode(
         "gripper_summary": gripper_summary,
         "command_context_summary": command_context_summary,
         "event_summary": event_summary,
+        "conversion_readiness_errors": conversion_readiness_errors,
         "conversion_blockers": conversion_blockers,
         "warnings": warnings,
         "errors": errors,

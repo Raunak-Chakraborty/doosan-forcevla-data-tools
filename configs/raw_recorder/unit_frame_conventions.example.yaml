@@ -15,6 +15,10 @@ raw_candidates:
     tcp_translation_units: millimeters
     tcp_orientation_units: degrees
     tcp_orientation_convention: unknown_verify_euler_order
+    converter_supported_tcp_orientation_conventions:
+      - rotation_vector_degrees
+      - rotation_vector_radians
+    current_converter_rejects_unknown_euler_conventions: true
     joint_position_units: degrees
     joint_velocity_units: degrees_per_second
     force_units: N
@@ -53,6 +57,9 @@ frames:
 
 conversion_policy:
   compute_action_from: measured_consecutive_tcp_pose
+  record_index_policy: episode_level_aligned_sample_index_for_converter_streams
+  timestamp_alignment: diagnostics_only_no_interpolation_in_raw_real_v0
+  block_large_required_camera_source_stamp_offsets: true
   command_streams_are_labels: false
   terminal_padding_action: [0, 0, 0, 0, 0, 0, 0]
   normalize_tcp_translation_to_meters: true

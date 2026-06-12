@@ -40,6 +40,28 @@ JSONL_STREAM_NAMES = {
 }
 
 CAMERA_STREAM_NAMES = {"external_camera", "wrist_camera"}
+CONVERTER_REQUIRED_ALIGNMENT_STREAMS = ["joint_states", "external_camera", "wrist_camera"]
+CONVERTER_ALIGNED_OPTIONAL_STREAMS = ["gripper_state"]
+ROTATION_VECTOR_DEGREES = "rotation_vector_degrees"
+ROTATION_VECTOR_RADIANS = "rotation_vector_radians"
+
+SUPPORTED_TCP_POSITION_UNITS = {"mm", "millimeter", "millimeters", "m", "meter", "meters"}
+SUPPORTED_TCP_ORIENTATION_UNITS = {"deg", "degree", "degrees", "rad", "radian", "radians"}
+SUPPORTED_JOINT_POSITION_UNITS = {"deg", "degree", "degrees", "rad", "radian", "radians"}
+SUPPORTED_JOINT_VELOCITY_UNITS = {
+    "deg/s",
+    "deg_per_s",
+    "degree/s",
+    "degrees/s",
+    "degrees_per_second",
+    "rad/s",
+    "rad_per_s",
+    "radian/s",
+    "radians/s",
+    "radians_per_second",
+}
+DEGREE_UNITS = {"deg", "degree", "degrees"}
+RADIAN_UNITS = {"rad", "radian", "radians"}
 
 
 def _is_non_empty_string(value: Any) -> bool:
@@ -64,6 +86,74 @@ def _is_path_under_root(root: Path, path: Path) -> bool:
     except (OSError, RuntimeError, ValueError):
         return False
     return True
+
+
+def _is_numeric_list(value: Any, expected_len: int) -> bool:
+    return isinstance(value, list) and len(value) == expected_len and all(_is_finite_number(item) for item in value)
+
+
+def _normalized_unit(units: dict[str, Any], key: str) -> str | None:
+    value = units.get(key)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip().lower().replace(" ", "_")
+
+
+def _combined_units(record: dict[str, Any] | None, stream_entry: dict[str, Any] | None) -> dict[str, Any]:
+    units: dict[str, Any] = {}
+    if isinstance(stream_entry, dict) and isinstance(stream_entry.get("units"), dict):
+        units.update(stream_entry["units"])
+    if isinstance(record, dict) and isinstance(record.get("units"), dict):
+        units.update(record["units"])
+    return units
+
+
+def _is_synthetic_episode(
+    metadata: dict[str, Any] | None,
+    recorder_report: dict[str, Any] | None,
+    streams_index: dict[str, Any] | None,
+) -> bool:
+    collection_method = metadata.get("collection_method") if isinstance(metadata, dict) else None
+    recorder_version = metadata.get("recorder_version") if isinstance(metadata, dict) else None
+    return any(
+        [
+            isinstance(collection_method, str) and "synthetic" in collection_method.lower(),
+            isinstance(recorder_version, str) and "synthetic" in recorder_version.lower(),
+            isinstance(recorder_report, dict) and recorder_report.get("synthetic") is True,
+            isinstance(streams_index, dict) and streams_index.get("synthetic") is True,
+        ]
+    )
+
+
+def _tcp_orientation_convention(
+    metadata: dict[str, Any] | None,
+    recorder_report: dict[str, Any] | None,
+) -> Any:
+    if isinstance(metadata, dict) and metadata.get("tcp_orientation_convention") is not None:
+        return metadata.get("tcp_orientation_convention")
+    if isinstance(recorder_report, dict):
+        return recorder_report.get("tcp_orientation_convention")
+    return None
+
+
+def _supported_unit_error(
+    units: dict[str, Any],
+    key: str,
+    supported: set[str],
+    context: str,
+) -> str | None:
+    unit = _normalized_unit(units, key)
+    if unit in supported:
+        return None
+    return f"{context}: unsupported or missing {key} unit: {unit!r}"
+
+
+def _orientation_unit_matches_convention(unit: str | None, convention: Any, context: str) -> str | None:
+    if convention == ROTATION_VECTOR_DEGREES and unit not in DEGREE_UNITS:
+        return f"{context}: tcp_orientation unit {unit!r} does not match tcp_orientation_convention='rotation_vector_degrees'"
+    if convention == ROTATION_VECTOR_RADIANS and unit not in RADIAN_UNITS:
+        return f"{context}: tcp_orientation unit {unit!r} does not match tcp_orientation_convention='rotation_vector_radians'"
+    return None
 
 
 def _read_json_object(path: Path, errors: list[str], label: str) -> dict[str, Any] | None:
@@ -354,8 +444,6 @@ def _validate_robot_state_rt(records: list[dict[str, Any]], path: Path, errors: 
     for idx, record in enumerate(records):
         context = f"{path}: robot_state_rt record {idx}"
         _check_numeric_list(record, "actual_tcp_position", 6, context, errors)
-        _check_numeric_list(record, "actual_joint_position", 6, context, errors)
-        _check_numeric_list(record, "actual_joint_velocity", 6, context, errors)
 
         has_external_tcp_force = "external_tcp_force" in record
         has_raw_force_torque = "raw_force_torque" in record
@@ -587,7 +675,7 @@ def _check_record_index_alignment(
     if not primary_indexes:
         return
 
-    for stream_name in ["joint_states", "external_camera", "wrist_camera"]:
+    for stream_name in CONVERTER_REQUIRED_ALIGNMENT_STREAMS:
         if stream_name not in records_by_stream:
             continue
         candidate_indexes = _record_index_set(records_by_stream[stream_name])
@@ -597,7 +685,7 @@ def _check_record_index_alignment(
                 f"{_alignment_details(primary_indexes, candidate_indexes)}"
             )
 
-    for stream_name in ["gripper_state"]:
+    for stream_name in CONVERTER_ALIGNED_OPTIONAL_STREAMS:
         if stream_name not in records_by_stream:
             continue
         candidate_indexes = _record_index_set(records_by_stream[stream_name])
@@ -627,12 +715,153 @@ def _records_by_index(records: list[dict[str, Any]]) -> dict[int, dict[str, Any]
     return indexed
 
 
-def _timestamp_tolerance_seconds(metadata: dict[str, Any] | None) -> float:
+def timestamp_tolerance_seconds(metadata: dict[str, Any] | None) -> float:
     if metadata is not None:
         fps = metadata.get("fps")
         if _is_finite_number(fps) and float(fps) > 0.0:
-            return max(0.05, 2.0 / float(fps))
+            return max(0.1, 2.0 / float(fps))
     return 0.1
+
+
+def _source_stamp_alignment_errors(
+    records_by_stream: dict[str, list[dict[str, Any]]],
+    metadata: dict[str, Any] | None,
+) -> list[str]:
+    robot_by_index = _records_by_index(records_by_stream.get("robot_state_rt", []))
+    if not robot_by_index:
+        return []
+
+    errors: list[str] = []
+    tolerance = timestamp_tolerance_seconds(metadata)
+    for stream_name in ["external_camera", "wrist_camera"]:
+        stream_by_index = _records_by_index(records_by_stream.get(stream_name, []))
+        common_indexes = sorted(set(robot_by_index) & set(stream_by_index))
+        for record_index in common_indexes:
+            robot_stamp = _source_stamp_seconds(robot_by_index[record_index].get("source_stamp"))
+            stream_stamp = _source_stamp_seconds(stream_by_index[record_index].get("source_stamp"))
+            if robot_stamp is None or stream_stamp is None:
+                continue
+            if abs(stream_stamp - robot_stamp) > tolerance:
+                errors.append(
+                    f"{stream_name}: source_stamp differs from robot_state_rt by more than "
+                    f"{tolerance:.3f}s at record_index {record_index}; raw_real_v0 conversion requires "
+                    "aligned episode-level record_index values"
+                )
+                break
+    return errors
+
+
+def raw_real_conversion_readiness_errors(
+    metadata: dict[str, Any] | None,
+    recorder_report: dict[str, Any] | None,
+    streams_index: dict[str, Any] | None,
+    streams: dict[str, Any] | None,
+    records_by_stream: dict[str, list[dict[str, Any]]],
+) -> list[str]:
+    """Return validator errors for raw_real_v0 data the converter would reject."""
+
+    errors = _source_stamp_alignment_errors(records_by_stream, metadata)
+    if _is_synthetic_episode(metadata, recorder_report, streams_index):
+        return errors
+    if not isinstance(streams, dict):
+        return errors
+
+    convention = _tcp_orientation_convention(metadata, recorder_report)
+    if convention not in {ROTATION_VECTOR_DEGREES, ROTATION_VECTOR_RADIANS}:
+        errors.append(
+            "metadata/recorder_report: tcp_orientation_convention must be one of "
+            "'rotation_vector_degrees' or 'rotation_vector_radians' for non-synthetic conversion; "
+            "tcp_orientation_convention_verified alone is not sufficient"
+        )
+
+    robot_entry = streams.get("robot_state_rt") if isinstance(streams.get("robot_state_rt"), dict) else {}
+    joint_entry = streams.get("joint_states") if isinstance(streams.get("joint_states"), dict) else {}
+    robot_records = records_by_stream.get("robot_state_rt", [])
+    joint_by_index = _records_by_index(records_by_stream.get("joint_states", []))
+
+    for idx, robot_record in enumerate(robot_records):
+        context = f"robot_state_rt record {idx}"
+        robot_units = _combined_units(robot_record, robot_entry)
+
+        tcp_position_error = _supported_unit_error(
+            robot_units,
+            "tcp_position",
+            SUPPORTED_TCP_POSITION_UNITS,
+            f"{context} actual_tcp_position",
+        )
+        if tcp_position_error is not None:
+            errors.append(tcp_position_error)
+
+        tcp_orientation_error = _supported_unit_error(
+            robot_units,
+            "tcp_orientation",
+            SUPPORTED_TCP_ORIENTATION_UNITS,
+            f"{context} actual_tcp_position[3:6]",
+        )
+        if tcp_orientation_error is not None:
+            errors.append(tcp_orientation_error)
+        else:
+            mismatch_error = _orientation_unit_matches_convention(
+                _normalized_unit(robot_units, "tcp_orientation"),
+                convention,
+                f"{context} actual_tcp_position[3:6]",
+            )
+            if mismatch_error is not None:
+                errors.append(mismatch_error)
+
+        record_index = robot_record.get("record_index")
+        joint_record = joint_by_index.get(record_index) if _is_non_negative_int(record_index) else None
+        joint_units = _combined_units(joint_record, joint_entry)
+
+        if _is_numeric_list(robot_record.get("actual_joint_position"), 6):
+            joint_position_error = _supported_unit_error(
+                robot_units,
+                "joint_position",
+                SUPPORTED_JOINT_POSITION_UNITS,
+                f"{context} actual_joint_position",
+            )
+            if joint_position_error is not None:
+                errors.append(joint_position_error)
+        elif not isinstance(joint_record, dict) or not _is_numeric_list(joint_record.get("position"), 6):
+            errors.append(
+                f"{context} actual_joint_position is missing/invalid and joint_states record_index "
+                f"{record_index!r} position is not valid for fallback"
+            )
+        else:
+            joint_position_error = _supported_unit_error(
+                joint_units,
+                "position",
+                SUPPORTED_JOINT_POSITION_UNITS,
+                f"joint_states record_index {record_index} position",
+            )
+            if joint_position_error is not None:
+                errors.append(joint_position_error)
+
+        if _is_numeric_list(robot_record.get("actual_joint_velocity"), 6):
+            joint_velocity_error = _supported_unit_error(
+                robot_units,
+                "joint_velocity",
+                SUPPORTED_JOINT_VELOCITY_UNITS,
+                f"{context} actual_joint_velocity",
+            )
+            if joint_velocity_error is not None:
+                errors.append(joint_velocity_error)
+        elif not isinstance(joint_record, dict) or not _is_numeric_list(joint_record.get("velocity"), 6):
+            errors.append(
+                f"{context} actual_joint_velocity is missing/invalid and joint_states record_index "
+                f"{record_index!r} velocity is not valid for fallback"
+            )
+        else:
+            joint_velocity_error = _supported_unit_error(
+                joint_units,
+                "velocity",
+                SUPPORTED_JOINT_VELOCITY_UNITS,
+                f"joint_states record_index {record_index} velocity",
+            )
+            if joint_velocity_error is not None:
+                errors.append(joint_velocity_error)
+
+    return errors
 
 
 def _warn_timestamp_mismatches(
@@ -643,7 +872,7 @@ def _warn_timestamp_mismatches(
     robot_by_index = _records_by_index(records_by_stream.get("robot_state_rt", []))
     if not robot_by_index:
         return
-    tolerance = _timestamp_tolerance_seconds(metadata)
+    tolerance = timestamp_tolerance_seconds(metadata)
 
     for stream_name in [
         "joint_states",
@@ -697,7 +926,7 @@ def validate_raw_real_episode(root_dir: str | Path) -> ValidationResult:
         _check_metadata(metadata, metadata_path, errors)
 
     _read_json_object(root / "calibration_refs.json", errors, "calibration_refs")
-    _read_json_object(root / "recorder_report.json", errors, "recorder_report")
+    recorder_report = _read_json_object(root / "recorder_report.json", errors, "recorder_report")
     events = _read_jsonl_objects(root / "events.jsonl", errors, "events")
     _validate_events(events, root / "events.jsonl", metadata, errors, warnings)
 
@@ -770,6 +999,15 @@ def validate_raw_real_episode(root_dir: str | Path) -> ValidationResult:
             )
 
     _check_record_index_alignment(records_by_stream, errors, warnings)
+    errors.extend(
+        raw_real_conversion_readiness_errors(
+            metadata,
+            recorder_report,
+            streams_index,
+            streams,
+            records_by_stream,
+        )
+    )
     _warn_timestamp_mismatches(records_by_stream, metadata, warnings)
 
     return ValidationResult(not errors, errors, warnings)

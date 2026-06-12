@@ -18,10 +18,41 @@ def _read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def _write_json(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
 def _write_jsonl(path: Path, records: list[dict]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         for record in records:
             handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+
+
+def _mark_non_synthetic(episode: Path, convention: str | None = "rotation_vector_degrees") -> None:
+    metadata_path = episode / "metadata.json"
+    metadata = _read_json(metadata_path)
+    metadata["collection_method"] = "passive_real_recorder"
+    metadata["recorder_version"] = "passive_real_recorder_v0"
+    metadata["source_workspace"] = {"path": "lab/offline", "verified": True}
+    metadata.pop("tcp_orientation_convention_verified", None)
+    if convention is None:
+        metadata.pop("tcp_orientation_convention", None)
+    else:
+        metadata["tcp_orientation_convention"] = convention
+    _write_json(metadata_path, metadata)
+
+    recorder_report_path = episode / "recorder_report.json"
+    recorder_report = _read_json(recorder_report_path)
+    recorder_report["synthetic"] = False
+    recorder_report["generator"] = "passive_real_recorder"
+    recorder_report["generator_version"] = "passive_real_recorder_v0"
+    recorder_report.pop("tcp_orientation_convention_verified", None)
+    _write_json(recorder_report_path, recorder_report)
+
+    streams_index_path = episode / "streams" / "index.json"
+    streams_index = _read_json(streams_index_path)
+    streams_index["synthetic"] = False
+    _write_json(streams_index_path, streams_index)
 
 
 class InspectRawRealEpisodeTests(unittest.TestCase):
@@ -216,6 +247,128 @@ class InspectRawRealEpisodeTests(unittest.TestCase):
                     self.assertFalse(report["ready_for_conversion"])
                     self.assertFalse(report["validation"]["ok"])
                     self.assertTrue(report["errors"])
+
+    def test_non_synthetic_missing_robot_units_blocks_readiness(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode)
+            index_path = episode / "streams" / "index.json"
+            index = _read_json(index_path)
+            index["streams"]["robot_state_rt"].pop("units", None)
+            _write_json(index_path, index)
+            robot_path = episode / "streams" / "robot_state_rt.jsonl"
+            robot_records = _read_jsonl(robot_path)
+            for record in robot_records:
+                record.pop("units", None)
+            _write_jsonl(robot_path, robot_records)
+
+            report = inspect_raw_real_episode(episode)
+
+            self.assertFalse(report["ready_for_conversion"])
+            self.assertFalse(report["validation"]["ok"])
+            self.assertTrue(any("tcp_position unit" in error for error in report["errors"]))
+            self.assertTrue(any("tcp_position unit" in blocker for blocker in report["conversion_blockers"]))
+
+    def test_non_synthetic_unsupported_tcp_units_block_readiness(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cases = [("tcp_position", "inch"), ("tcp_orientation", "turns")]
+            for unit_key, unit_value in cases:
+                with self.subTest(unit=unit_key):
+                    episode = Path(tmpdir) / f"episode_{unit_key}"
+                    make_synthetic_raw_real_episode(episode, frame_count=4)
+                    _mark_non_synthetic(episode)
+                    robot_path = episode / "streams" / "robot_state_rt.jsonl"
+                    robot_records = _read_jsonl(robot_path)
+                    for record in robot_records:
+                        record["units"][unit_key] = unit_value
+                    _write_jsonl(robot_path, robot_records)
+
+                    report = inspect_raw_real_episode(episode)
+
+                    self.assertFalse(report["ready_for_conversion"])
+                    self.assertTrue(any(unit_key in blocker for blocker in report["conversion_blockers"]))
+
+    def test_non_synthetic_explicit_units_and_convention_are_ready(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode, convention="rotation_vector_degrees")
+
+            report = inspect_raw_real_episode(episode)
+
+            self.assertTrue(report["validation"]["ok"], report["validation"]["errors"])
+            self.assertTrue(report["ready_for_conversion"], report["errors"])
+            self.assertEqual(report["conversion_readiness_errors"], [])
+
+    def test_non_synthetic_verified_boolean_without_convention_blocks_readiness(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode, convention=None)
+            metadata_path = episode / "metadata.json"
+            metadata = _read_json(metadata_path)
+            metadata["tcp_orientation_convention_verified"] = True
+            _write_json(metadata_path, metadata)
+
+            report = inspect_raw_real_episode(episode)
+
+            self.assertFalse(report["ready_for_conversion"])
+            self.assertTrue(any("tcp_orientation_convention" in error for error in report["errors"]))
+
+    def test_joint_states_fallback_can_make_non_synthetic_episode_ready(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode)
+            robot_path = episode / "streams" / "robot_state_rt.jsonl"
+            robot_records = _read_jsonl(robot_path)
+            for record in robot_records:
+                record.pop("actual_joint_position", None)
+                record.pop("actual_joint_velocity", None)
+                record["units"].pop("joint_position", None)
+                record["units"].pop("joint_velocity", None)
+            _write_jsonl(robot_path, robot_records)
+
+            report = inspect_raw_real_episode(episode)
+
+            self.assertTrue(report["validation"]["ok"], report["validation"]["errors"])
+            self.assertTrue(report["ready_for_conversion"], report["errors"])
+
+    def test_huge_camera_source_stamp_offset_blocks_readiness(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode)
+            for stream_name in ["external_camera", "wrist_camera"]:
+                index_path = episode / "streams" / stream_name / "index.jsonl"
+                records = _read_jsonl(index_path)
+                for record in records:
+                    record["source_stamp"] = float(record["source_stamp"]) + 999.0
+                _write_jsonl(index_path, records)
+
+            report = inspect_raw_real_episode(episode)
+
+            self.assertFalse(report["ready_for_conversion"])
+            self.assertTrue(any("source_stamp differs from robot_state_rt" in blocker for blocker in report["conversion_blockers"]))
+            self.assertTrue(any("source_stamp synchronization" in recommendation for recommendation in report["recommendations"]))
+
+    def test_small_camera_source_stamp_jitter_does_not_block_readiness(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4, fps=30.0)
+            _mark_non_synthetic(episode)
+            for stream_name in ["external_camera", "wrist_camera"]:
+                index_path = episode / "streams" / stream_name / "index.jsonl"
+                records = _read_jsonl(index_path)
+                for record in records:
+                    record["source_stamp"] = float(record["source_stamp"]) + 0.01
+                _write_jsonl(index_path, records)
+
+            report = inspect_raw_real_episode(episode)
+
+            self.assertTrue(report["validation"]["ok"], report["validation"]["errors"])
+            self.assertTrue(report["ready_for_conversion"], report["errors"])
 
     def test_no_forbidden_ros_imports_in_inspection_module(self):
         source_path = (

@@ -9,8 +9,10 @@ from pathlib import Path
 
 from doosan_forcevla_data.convert.raw_real_to_processed import convert_raw_real_to_processed
 from doosan_forcevla_data.dummy.make_synthetic_raw_real_episode import make_synthetic_raw_real_episode
+from doosan_forcevla_data.inspect.inspect_raw_real_episode import inspect_raw_real_episode
 from doosan_forcevla_data.schema.processed_schema import ACTION_DIM, MODEL_STATE_DIM
 from doosan_forcevla_data.validate.validate_processed_episode import validate_processed_episode
+from doosan_forcevla_data.validate.validate_raw_real_episode import validate_raw_real_episode
 
 
 def _read_json(path: Path) -> dict:
@@ -29,6 +31,33 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         for record in records:
             handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+
+
+def _mark_non_synthetic(episode: Path, convention: str | None = "rotation_vector_degrees") -> None:
+    metadata_path = episode / "metadata.json"
+    metadata = _read_json(metadata_path)
+    metadata["collection_method"] = "passive_real_recorder"
+    metadata["recorder_version"] = "passive_real_recorder_v0"
+    metadata["source_workspace"] = {"path": "lab/offline", "verified": True}
+    metadata.pop("tcp_orientation_convention_verified", None)
+    if convention is None:
+        metadata.pop("tcp_orientation_convention", None)
+    else:
+        metadata["tcp_orientation_convention"] = convention
+    _write_json(metadata_path, metadata)
+
+    recorder_report_path = episode / "recorder_report.json"
+    recorder_report = _read_json(recorder_report_path)
+    recorder_report["synthetic"] = False
+    recorder_report["generator"] = "passive_real_recorder"
+    recorder_report["generator_version"] = "passive_real_recorder_v0"
+    recorder_report.pop("tcp_orientation_convention_verified", None)
+    _write_json(recorder_report_path, recorder_report)
+
+    streams_index_path = episode / "streams" / "index.json"
+    streams_index = _read_json(streams_index_path)
+    streams_index["synthetic"] = False
+    _write_json(streams_index_path, streams_index)
 
 
 class RawRealToProcessedTests(unittest.TestCase):
@@ -147,6 +176,81 @@ class RawRealToProcessedTests(unittest.TestCase):
             result = validate_processed_episode(processed_episode)
             self.assertTrue(result.ok, result.errors)
 
+    def test_output_equal_to_raw_root_fails_before_writing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            raw_episode = Path(tmpdir) / "raw_real" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode)
+
+            with self.assertRaisesRegex(ValueError, "cannot be inside the raw-real episode"):
+                convert_raw_real_to_processed(raw_episode, raw_episode, overwrite=True)
+
+            self.assertFalse((raw_episode / "metadata_processed.json").exists())
+
+    def test_new_output_under_raw_root_fails_before_writing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            raw_episode = Path(tmpdir) / "raw_real" / "episode_000000"
+            output_under_raw = raw_episode / "processed_inside_raw"
+            make_synthetic_raw_real_episode(raw_episode)
+
+            with self.assertRaisesRegex(ValueError, "cannot be inside the raw-real episode"):
+                convert_raw_real_to_processed(raw_episode, output_under_raw)
+
+            self.assertFalse(output_under_raw.exists())
+
+    def test_existing_output_under_raw_root_fails_before_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            raw_episode = Path(tmpdir) / "raw_real" / "episode_000000"
+            output_under_raw = raw_episode / "processed_inside_raw"
+            make_synthetic_raw_real_episode(raw_episode)
+            output_under_raw.mkdir()
+
+            with self.assertRaisesRegex(ValueError, "cannot be inside the raw-real episode"):
+                convert_raw_real_to_processed(raw_episode, output_under_raw, overwrite=True)
+
+            self.assertTrue(output_under_raw.is_dir())
+            self.assertFalse((output_under_raw / "metadata_processed.json").exists())
+
+    def test_cli_fails_when_output_is_under_raw_root(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            raw_episode = Path(tmpdir) / "raw_real" / "episode_000000"
+            output_under_raw = raw_episode / "processed_inside_raw"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            env = dict(os.environ)
+            src_path = Path(__file__).resolve().parents[1] / "src"
+            env["PYTHONPATH"] = str(src_path) + os.pathsep + env.get("PYTHONPATH", "")
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "doosan_forcevla_data.convert.raw_real_to_processed",
+                    "--raw-real",
+                    str(raw_episode),
+                    "--output",
+                    str(output_under_raw),
+                ],
+                check=False,
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("cannot be inside the raw-real episode", completed.stdout)
+            self.assertFalse(output_under_raw.exists())
+
+    def test_normal_output_sibling_directory_still_succeeds(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+
+            convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            self.assertTrue((processed_episode / "metadata_processed.json").is_file())
+            self.assertTrue(validate_processed_episode(processed_episode).ok)
+
     def test_cli_smoke_converts_and_validates(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -209,35 +313,88 @@ class RawRealToProcessedTests(unittest.TestCase):
                 self.assertNotEqual(frame["measured_action"], [9.0] * ACTION_DIM)
                 self.assertNotEqual(frame["measured_action"][:6], [9.0, 8.0, 7.0, 6.0, 5.0, 4.0])
 
-    def test_non_synthetic_without_verified_tcp_orientation_fails_fast(self):
+    def test_non_synthetic_without_explicit_tcp_orientation_convention_fails_fast(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             raw_episode = root / "raw_real" / "episode_000000"
             processed_episode = root / "processed" / "episode_000000"
 
             make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode, convention=None)
 
-            metadata_path = raw_episode / "metadata.json"
-            metadata = _read_json(metadata_path)
-            metadata["collection_method"] = "passive_real_recorder"
-            metadata["recorder_version"] = "passive_real_recorder_v0"
-            metadata["source_workspace"] = {"path": "lab/offline", "verified": True}
-            _write_json(metadata_path, metadata)
-
-            recorder_report_path = raw_episode / "recorder_report.json"
-            recorder_report = _read_json(recorder_report_path)
-            recorder_report["synthetic"] = False
-            recorder_report["generator"] = "passive_real_recorder"
-            recorder_report["generator_version"] = "passive_real_recorder_v0"
-            _write_json(recorder_report_path, recorder_report)
-
-            streams_index_path = raw_episode / "streams" / "index.json"
-            streams_index = _read_json(streams_index_path)
-            streams_index["synthetic"] = False
-            _write_json(streams_index_path, streams_index)
-
-            with self.assertRaisesRegex(ValueError, "verified TCP orientation convention"):
+            with self.assertRaisesRegex(ValueError, "tcp_orientation_convention"):
                 convert_raw_real_to_processed(raw_episode, processed_episode)
+
+    def test_non_synthetic_missing_robot_units_is_blocked_before_conversion(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode)
+
+            index_path = raw_episode / "streams" / "index.json"
+            index = _read_json(index_path)
+            index["streams"]["robot_state_rt"].pop("units", None)
+            _write_json(index_path, index)
+            robot_path = raw_episode / "streams" / "robot_state_rt.jsonl"
+            robot_records = _read_jsonl(robot_path)
+            for record in robot_records:
+                record.pop("units", None)
+            _write_jsonl(robot_path, robot_records)
+
+            validation = validate_raw_real_episode(raw_episode)
+            report = inspect_raw_real_episode(raw_episode)
+            self.assertFalse(validation.ok)
+            self.assertFalse(report["ready_for_conversion"])
+            self.assertTrue(any("tcp_position unit" in error for error in validation.errors))
+            with self.assertRaisesRegex(ValueError, "tcp_position unit"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+            self.assertFalse(processed_episode.exists())
+
+    def test_non_synthetic_valid_explicit_units_and_convention_convert(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode, convention="rotation_vector_degrees")
+
+            validation = validate_raw_real_episode(raw_episode)
+            report = inspect_raw_real_episode(raw_episode)
+            self.assertTrue(validation.ok, validation.errors)
+            self.assertTrue(report["ready_for_conversion"], report["errors"])
+
+            convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            self.assertTrue(validate_processed_episode(processed_episode).ok)
+
+    def test_joint_states_fallback_converts_when_robot_joint_vectors_absent(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode, convention="rotation_vector_degrees")
+
+            robot_path = raw_episode / "streams" / "robot_state_rt.jsonl"
+            robot_records = _read_jsonl(robot_path)
+            for record in robot_records:
+                record.pop("actual_joint_position", None)
+                record.pop("actual_joint_velocity", None)
+                record["units"].pop("joint_position", None)
+                record["units"].pop("joint_velocity", None)
+            _write_jsonl(robot_path, robot_records)
+
+            validation = validate_raw_real_episode(raw_episode)
+            report = inspect_raw_real_episode(raw_episode)
+            self.assertTrue(validation.ok, validation.errors)
+            self.assertTrue(report["ready_for_conversion"], report["errors"])
+
+            convert_raw_real_to_processed(raw_episode, processed_episode)
+            metadata = _read_json(processed_episode / "metadata_processed.json")
+            self.assertEqual(metadata["joint_source"], ["joint_states.position; joint_states.velocity"])
+            self.assertTrue(validate_processed_episode(processed_episode).ok)
 
 
 if __name__ == "__main__":

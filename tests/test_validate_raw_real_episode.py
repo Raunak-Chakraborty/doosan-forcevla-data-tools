@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from doosan_forcevla_data.dummy.make_synthetic_raw_real_episode import make_synthetic_raw_real_episode
 from doosan_forcevla_data.validate.validate_raw_real_episode import validate_raw_real_episode
 
 
@@ -20,6 +21,41 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         for record in records:
             handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+
+
+def _read_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _mark_non_synthetic(episode: Path, convention: str | None = "rotation_vector_degrees") -> None:
+    metadata_path = episode / "metadata.json"
+    metadata = _read_json(metadata_path)
+    metadata["collection_method"] = "passive_real_recorder"
+    metadata["recorder_version"] = "passive_real_recorder_v0"
+    metadata["source_workspace"] = {"path": "lab/offline", "verified": True}
+    metadata.pop("tcp_orientation_convention_verified", None)
+    if convention is None:
+        metadata.pop("tcp_orientation_convention", None)
+    else:
+        metadata["tcp_orientation_convention"] = convention
+    _write_json(metadata_path, metadata)
+
+    recorder_report_path = episode / "recorder_report.json"
+    recorder_report = _read_json(recorder_report_path)
+    recorder_report["synthetic"] = False
+    recorder_report["generator"] = "passive_real_recorder"
+    recorder_report["generator_version"] = "passive_real_recorder_v0"
+    recorder_report.pop("tcp_orientation_convention_verified", None)
+    _write_json(recorder_report_path, recorder_report)
+
+    streams_index_path = episode / "streams" / "index.json"
+    streams_index = _read_json(streams_index_path)
+    streams_index["synthetic"] = False
+    _write_json(streams_index_path, streams_index)
 
 
 def _stamp(index: int, receipt: float | None = None, monotonic: float | None = None) -> dict:
@@ -311,13 +347,13 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = _build_valid_episode(Path(tmpdir))
             record = _robot_state_record()
-            record["actual_joint_position"][2] = math.inf
+            record["actual_tcp_position"][2] = math.inf
             _write_jsonl(episode / "streams" / "robot_state_rt.jsonl", [record])
 
             result = validate_raw_real_episode(episode)
 
             self.assertFalse(result.ok)
-            self.assertTrue(any("actual_joint_position[2] must be a finite number" in error for error in result.errors))
+            self.assertTrue(any("actual_tcp_position[2] must be a finite number" in error for error in result.errors))
 
     def test_wrong_joint_vector_length_fails(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -430,6 +466,134 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
             self.assertTrue(result.ok, result.errors)
             self.assertTrue(any("optional stream command_context is absent" in warning for warning in result.warnings))
             self.assertTrue(any("optional stream gripper_state is absent" in warning for warning in result.warnings))
+
+    def test_non_synthetic_missing_robot_state_units_fails_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode)
+            index_path = episode / "streams" / "index.json"
+            index = _read_json(index_path)
+            index["streams"]["robot_state_rt"].pop("units", None)
+            _write_json(index_path, index)
+            robot_path = episode / "streams" / "robot_state_rt.jsonl"
+            robot_records = _read_jsonl(robot_path)
+            for record in robot_records:
+                record.pop("units", None)
+            _write_jsonl(robot_path, robot_records)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("actual_tcp_position: unsupported or missing tcp_position unit" in error for error in result.errors))
+
+    def test_non_synthetic_unsupported_tcp_position_unit_fails_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode)
+            robot_path = episode / "streams" / "robot_state_rt.jsonl"
+            robot_records = _read_jsonl(robot_path)
+            for record in robot_records:
+                record["units"]["tcp_position"] = "inch"
+            _write_jsonl(robot_path, robot_records)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("unsupported or missing tcp_position unit: 'inch'" in error for error in result.errors))
+
+    def test_non_synthetic_unsupported_tcp_orientation_unit_fails_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode)
+            robot_path = episode / "streams" / "robot_state_rt.jsonl"
+            robot_records = _read_jsonl(robot_path)
+            for record in robot_records:
+                record["units"]["tcp_orientation"] = "turns"
+            _write_jsonl(robot_path, robot_records)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("unsupported or missing tcp_orientation unit: 'turns'" in error for error in result.errors))
+
+    def test_non_synthetic_explicit_valid_units_and_convention_passes_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode, convention="rotation_vector_degrees")
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertTrue(result.ok, result.errors)
+
+    def test_non_synthetic_verified_boolean_without_convention_fails_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode, convention=None)
+            metadata_path = episode / "metadata.json"
+            metadata = _read_json(metadata_path)
+            metadata["tcp_orientation_convention_verified"] = True
+            _write_json(metadata_path, metadata)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("tcp_orientation_convention must be one of" in error for error in result.errors))
+
+    def test_joint_states_fallback_allows_missing_robot_state_joint_vectors(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode)
+            robot_path = episode / "streams" / "robot_state_rt.jsonl"
+            robot_records = _read_jsonl(robot_path)
+            for record in robot_records:
+                record.pop("actual_joint_position", None)
+                record.pop("actual_joint_velocity", None)
+                record["units"].pop("joint_position", None)
+                record["units"].pop("joint_velocity", None)
+            _write_jsonl(robot_path, robot_records)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertTrue(result.ok, result.errors)
+
+    def test_huge_camera_source_stamp_offset_fails_validation_even_when_indexes_match(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode)
+            for stream_name in ["external_camera", "wrist_camera"]:
+                index_path = episode / "streams" / stream_name / "index.jsonl"
+                records = _read_jsonl(index_path)
+                for record in records:
+                    record["source_stamp"] = float(record["source_stamp"]) + 999.0
+                _write_jsonl(index_path, records)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("source_stamp differs from robot_state_rt" in error for error in result.errors))
+
+    def test_small_camera_source_stamp_jitter_passes_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4, fps=30.0)
+            _mark_non_synthetic(episode)
+            for stream_name in ["external_camera", "wrist_camera"]:
+                index_path = episode / "streams" / stream_name / "index.jsonl"
+                records = _read_jsonl(index_path)
+                for record in records:
+                    record["source_stamp"] = float(record["source_stamp"]) + 0.01
+                _write_jsonl(index_path, records)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertTrue(result.ok, result.errors)
 
 
 if __name__ == "__main__":

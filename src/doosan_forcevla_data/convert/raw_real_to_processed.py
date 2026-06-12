@@ -27,6 +27,7 @@ from doosan_forcevla_data.validate.validate_raw_real_episode import validate_raw
 DATASET_NAME = "doosan_peg_in_hole_v0"
 CONVERTER_VERSION = "raw_real_to_processed_v0"
 ROTATION_VECTOR_DEGREES = "rotation_vector_degrees"
+ROTATION_VECTOR_RADIANS = "rotation_vector_radians"
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
@@ -296,20 +297,13 @@ def _orientation_policy(
     convention = metadata.get("tcp_orientation_convention") or recorder_report.get("tcp_orientation_convention")
     if convention == ROTATION_VECTOR_DEGREES:
         return False, "tcp_orientation_convention=rotation_vector_degrees", "deg"
-
-    verified = metadata.get("tcp_orientation_convention_verified") or recorder_report.get(
-        "tcp_orientation_convention_verified"
-    )
-    if verified is True:
-        return False, (
-            "tcp_orientation_convention_verified=true; treating actual_tcp_position[3:6] "
-            "as verified rotation vector in degrees unless record units override it"
-        ), "deg"
+    if convention == ROTATION_VECTOR_RADIANS:
+        return False, "tcp_orientation_convention=rotation_vector_radians", "rad"
 
     raise ValueError(
-        "non-synthetic raw-real episode requires verified TCP orientation convention; "
+        "non-synthetic raw-real episode requires explicit supported TCP orientation convention; "
         "set tcp_orientation_convention='rotation_vector_degrees' or "
-        "tcp_orientation_convention_verified=true only after lab verification"
+        "tcp_orientation_convention='rotation_vector_radians' only after lab verification"
     )
 
 
@@ -425,6 +419,10 @@ def _contains_path(parent: Path, child: Path) -> bool:
 
 
 def _prepare_output(raw_root: Path, output_root: Path, overwrite: bool) -> None:
+    if _contains_path(raw_root, output_root):
+        raise ValueError(
+            f"output directory cannot be inside the raw-real episode directory: {output_root}"
+        )
     if output_root.exists() or output_root.is_symlink():
         if not overwrite:
             raise FileExistsError(f"output directory already exists: {output_root}")
@@ -485,6 +483,11 @@ def convert_raw_real_to_processed(
 
     raw_root = Path(raw_real_episode_dir)
     output_root = Path(output_dir)
+
+    if _contains_path(raw_root, output_root):
+        raise ValueError(
+            f"output directory cannot be inside the raw-real episode directory: {output_root}"
+        )
 
     validation = validate_raw_real_episode(raw_root)
     if not validation.ok:

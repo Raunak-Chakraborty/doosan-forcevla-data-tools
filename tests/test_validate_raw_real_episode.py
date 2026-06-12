@@ -125,7 +125,7 @@ def _build_valid_episode(root: Path) -> Path:
             1,
         ),
         "tf": _stream_entry("streams/tf.jsonl", "/tf", "tf2_msgs/msg/TFMessage", 1),
-        "tf_static": _stream_entry("streams/tf_static.jsonl", "/tf_static", "tf2_msgs/msg/TFMessage", 0),
+        "tf_static": _stream_entry("streams/tf_static.jsonl", "/tf_static", "tf2_msgs/msg/TFMessage", 1),
         "external_camera": _stream_entry(
             "streams/external_camera", "unknown_external_camera", "sensor_msgs/msg/Image", 1
         ),
@@ -136,7 +136,7 @@ def _build_valid_episode(root: Path) -> Path:
     _write_jsonl(streams_dir / "joint_states.jsonl", [_joint_record()])
     _write_jsonl(streams_dir / "robot_state_rt.jsonl", [_robot_state_record()])
     _write_jsonl(streams_dir / "tf.jsonl", [_tf_record()])
-    _write_jsonl(streams_dir / "tf_static.jsonl", [])
+    _write_jsonl(streams_dir / "tf_static.jsonl", [_tf_record()])
 
     for stream_name in ["external_camera", "wrist_camera"]:
         image_path = episode / "streams" / stream_name / "frames" / "000000.raw"
@@ -206,6 +206,62 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
             self.assertFalse(result.ok)
             self.assertTrue(any("required stream is missing: robot_state_rt" in error for error in result.errors))
 
+    def test_stream_index_schema_version_mismatch_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = _build_valid_episode(Path(tmpdir))
+            index = _read_stream_index(episode)
+            index["schema_version"] = "raw_real_future"
+            _write_json(episode / "streams" / "index.json", index)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("schema_version must be 'raw_real_v0'" in error for error in result.errors))
+
+    def test_required_stream_record_count_mismatch_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = _build_valid_episode(Path(tmpdir))
+            index = _read_stream_index(episode)
+            index["streams"]["joint_states"]["record_count"] = 2
+            _write_json(episode / "streams" / "index.json", index)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(
+                any("record_count 2 does not match actual record count 1" in error for error in result.errors)
+            )
+
+    def test_empty_required_stream_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = _build_valid_episode(Path(tmpdir))
+            _write_jsonl(episode / "streams" / "robot_state_rt.jsonl", [])
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(
+                any("required stream robot_state_rt must contain at least one record" in error for error in result.errors)
+            )
+
+    def test_required_stream_record_index_alignment_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = _build_valid_episode(Path(tmpdir))
+            index = _read_stream_index(episode)
+            index["streams"]["robot_state_rt"]["record_count"] = 2
+            _write_json(episode / "streams" / "index.json", index)
+            _write_jsonl(
+                episode / "streams" / "robot_state_rt.jsonl",
+                [_robot_state_record(0), _robot_state_record(1)],
+            )
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(
+                any("joint_states: record_index alignment with robot_state_rt failed" in error for error in result.errors)
+            )
+
     def test_camera_index_missing_image_fails(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = _build_valid_episode(Path(tmpdir))
@@ -215,6 +271,28 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
 
             self.assertFalse(result.ok)
             self.assertTrue(any("image_path does not exist" in error for error in result.errors))
+
+    def test_camera_index_empty_image_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = _build_valid_episode(Path(tmpdir))
+            (episode / "streams" / "external_camera" / "frames" / "000000.raw").write_bytes(b"")
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("image_path must reference a non-empty file" in error for error in result.errors))
+
+    def test_camera_index_path_escape_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = _build_valid_episode(Path(tmpdir))
+            record = _camera_record("external_camera")
+            record["image_path"] = "../outside.raw"
+            _write_jsonl(episode / "streams" / "external_camera" / "index.jsonl", [record])
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("image_path must be relative to episode root" in error for error in result.errors))
 
     def test_non_monotonic_timestamp_fails(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -264,6 +342,84 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
 
             self.assertFalse(result.ok)
             self.assertTrue(any("actual_tcp_position must be a list of length 6" in error for error in result.errors))
+
+    def test_empty_required_metadata_string_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = _build_valid_episode(Path(tmpdir))
+            metadata = json.loads((episode / "metadata.json").read_text(encoding="utf-8"))
+            metadata["task_instruction"] = ""
+            _write_json(episode / "metadata.json", metadata)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("task_instruction must be a non-empty string" in error for error in result.errors))
+
+    def test_non_monotonic_event_timestamp_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = _build_valid_episode(Path(tmpdir))
+            _write_jsonl(
+                episode / "events.jsonl",
+                [
+                    {"timestamp": 1.0, "event": "episode_start"},
+                    {"timestamp": 0.5, "event": "success"},
+                ],
+            )
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("event record 1: timestamp must be monotonic" in error for error in result.errors))
+
+    def test_optional_gripper_state_invalid_value_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = _build_valid_episode(Path(tmpdir))
+            index = _read_stream_index(episode)
+            index["streams"]["gripper_state"] = _stream_entry(
+                "streams/gripper_state.jsonl",
+                "test_gripper",
+                "diagnostic/gripper",
+                1,
+                required=False,
+            )
+            _write_json(episode / "streams" / "index.json", index)
+            _write_jsonl(
+                episode / "streams" / "gripper_state.jsonl",
+                [{**_stamp(0), "gripper_width_m": -0.1}],
+            )
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("gripper_width_m must be non-negative" in error for error in result.errors))
+
+    def test_command_context_alignment_warning_not_failure(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = _build_valid_episode(Path(tmpdir))
+            index = _read_stream_index(episode)
+            index["streams"]["command_context"] = _stream_entry(
+                "streams/command_context.jsonl",
+                "test_command_context",
+                "diagnostic/command_context",
+                2,
+                required=False,
+            )
+            _write_json(episode / "streams" / "index.json", index)
+            _write_jsonl(
+                episode / "streams" / "command_context.jsonl",
+                [
+                    {**_stamp(0), "command_kind": "twist", "action_label": [1.0] * 7},
+                    {**_stamp(1), "command_kind": "twist", "commanded_twist": [0.0] * 6},
+                ],
+            )
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertTrue(result.ok, result.errors)
+            self.assertTrue(
+                any("command_context: record_index differs from robot_state_rt" in warning for warning in result.warnings)
+            )
+            self.assertTrue(any("action-like fields are diagnostic only" in warning for warning in result.warnings))
 
     def test_optional_streams_absent_only_warns(self):
         with tempfile.TemporaryDirectory() as tmpdir:

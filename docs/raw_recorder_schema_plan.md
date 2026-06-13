@@ -709,3 +709,7 @@ The ROS2/Doosan static inspection report leaves several material uncertainties. 
 Final integration principle:
 
 The ROS recorder should capture raw synchronized evidence from the live system. The offline data-pipeline repository should own interpretation, validation, normalization, episode slicing, measured 7D TCP delta computation, LeRobot export, and ForceVLA model-facing transforms.
+
+### Strict lab/source provenance readiness
+
+For non-synthetic real-lab episodes, set `lab_provenance_required: true` or `strict_lab_provenance: true` when the episode should be treated as conversion-ready lab data. In that mode, conversion readiness requires verified source workspace metadata, concrete live graph topic/frame/source names, `time_sync_verified: true`, known stream `source_name` values, `verified: true` stream entries, and known camera `frame_id` values. Placeholder values such as `unknown`, `todo`, or empty strings are readiness errors in strict mode.

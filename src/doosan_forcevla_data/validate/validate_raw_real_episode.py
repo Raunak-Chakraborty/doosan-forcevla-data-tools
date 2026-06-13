@@ -45,6 +45,29 @@ CONVERTER_ALIGNED_OPTIONAL_STREAMS = ["gripper_state"]
 ROTATION_VECTOR_DEGREES = "rotation_vector_degrees"
 ROTATION_VECTOR_RADIANS = "rotation_vector_radians"
 
+STRICT_LAB_PROVENANCE_KEYS = [
+    "exact_doosan_namespace",
+    "external_camera_topic",
+    "wrist_camera_topic",
+    "read_data_rt_service",
+    "tcp_frame",
+    "flange_frame",
+    "tool_frame",
+    "force_torque_source",
+    "gripper_state_source",
+]
+UNKNOWN_PROVENANCE_MARKERS = {
+    "unknown",
+    "unverified",
+    "unset",
+    "todo",
+    "tbd",
+    "none",
+    "null",
+    "n/a",
+    "na",
+}
+
 SUPPORTED_TCP_POSITION_UNITS = {"mm", "millimeter", "millimeters", "m", "meter", "meters"}
 SUPPORTED_TCP_ORIENTATION_UNITS = {"deg", "degree", "degrees", "rad", "radian", "radians"}
 SUPPORTED_JOINT_POSITION_UNITS = {"deg", "degree", "degrees", "rad", "radian", "radians"}
@@ -154,6 +177,86 @@ def _orientation_unit_matches_convention(unit: str | None, convention: Any, cont
     if convention == ROTATION_VECTOR_RADIANS and unit not in RADIAN_UNITS:
         return f"{context}: tcp_orientation unit {unit!r} does not match tcp_orientation_convention='rotation_vector_radians'"
     return None
+
+
+
+def _is_unknown_provenance_value(value: Any) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return True
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    return (
+        normalized in UNKNOWN_PROVENANCE_MARKERS
+        or normalized.startswith("unknown")
+        or normalized.startswith("todo")
+        or normalized.startswith("tbd")
+    )
+
+
+def _strict_lab_provenance_required(
+    metadata: dict[str, Any] | None,
+    recorder_report: dict[str, Any] | None,
+) -> bool:
+    if isinstance(metadata, dict) and (
+        metadata.get("lab_provenance_required") is True
+        or metadata.get("strict_lab_provenance") is True
+    ):
+        return True
+    if isinstance(recorder_report, dict) and (
+        recorder_report.get("lab_provenance_required") is True
+        or recorder_report.get("strict_lab_provenance") is True
+    ):
+        return True
+    return False
+
+
+def _strict_lab_provenance_errors(
+    metadata: dict[str, Any] | None,
+    recorder_report: dict[str, Any] | None,
+    streams: dict[str, Any] | None,
+    records_by_stream: dict[str, list[dict[str, Any]]],
+) -> list[str]:
+    if not _strict_lab_provenance_required(metadata, recorder_report):
+        return []
+
+    errors: list[str] = []
+    metadata_dict = metadata if isinstance(metadata, dict) else {}
+
+    source_workspace = metadata_dict.get("source_workspace")
+    if not isinstance(source_workspace, dict):
+        errors.append("strict lab provenance: metadata.source_workspace must be a JSON object")
+    else:
+        if source_workspace.get("verified") is not True:
+            errors.append("strict lab provenance: metadata.source_workspace.verified must be true")
+        for key in ["path", "git_commit", "git_remote", "git_branch"]:
+            if _is_unknown_provenance_value(source_workspace.get(key)):
+                errors.append(f"strict lab provenance: metadata.source_workspace.{key} must be known")
+
+    live_graph = metadata_dict.get("live_graph_verification")
+    if not isinstance(live_graph, dict):
+        errors.append("strict lab provenance: metadata.live_graph_verification must be a JSON object")
+    else:
+        if live_graph.get("time_sync_verified") is not True:
+            errors.append("strict lab provenance: metadata.live_graph_verification.time_sync_verified must be true")
+        for key in STRICT_LAB_PROVENANCE_KEYS:
+            if _is_unknown_provenance_value(live_graph.get(key)):
+                errors.append(f"strict lab provenance: metadata.live_graph_verification.{key} must be known")
+
+    if isinstance(streams, dict):
+        for stream_name, entry in streams.items():
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("verified") is not True:
+                errors.append(f"strict lab provenance: stream {stream_name} verified must be true")
+            if _is_unknown_provenance_value(entry.get("source_name")):
+                errors.append(f"strict lab provenance: stream {stream_name} source_name must be known")
+
+    for stream_name in sorted(CAMERA_STREAM_NAMES):
+        for idx, record in enumerate(records_by_stream.get(stream_name, [])):
+            if _is_unknown_provenance_value(record.get("frame_id")):
+                errors.append(f"strict lab provenance: {stream_name} camera record {idx} frame_id must be known")
+                break
+
+    return errors
 
 
 def _read_json_object(path: Path, errors: list[str], label: str) -> dict[str, Any] | None:
@@ -773,6 +876,8 @@ def raw_real_conversion_readiness_errors(
             "'rotation_vector_degrees' or 'rotation_vector_radians' for non-synthetic conversion; "
             "tcp_orientation_convention_verified alone is not sufficient"
         )
+
+    errors.extend(_strict_lab_provenance_errors(metadata, recorder_report, streams, records_by_stream))
 
     robot_entry = streams.get("robot_state_rt") if isinstance(streams.get("robot_state_rt"), dict) else {}
     joint_entry = streams.get("joint_states") if isinstance(streams.get("joint_states"), dict) else {}

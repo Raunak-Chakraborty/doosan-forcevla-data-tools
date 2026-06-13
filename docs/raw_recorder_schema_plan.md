@@ -643,6 +643,7 @@ operator_id: unknown
 site: lab_workstation
 calibration_version: unknown
 recorder_version: unknown
+lab_provenance_required: true
 source_workspace:
   path: /home/horus/robotics_thesis/lab_myros2_ws
   git_commit: unknown_static_report_found_no_git_metadata

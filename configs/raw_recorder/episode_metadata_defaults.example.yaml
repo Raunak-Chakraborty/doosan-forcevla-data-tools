@@ -23,6 +23,10 @@ site: lab_workstation
 recorder_version: unknown
 calibration_version: unknown
 
+# Real lab episodes should not be considered conversion-ready until source workspace,
+# live graph topics/frames, stream sources, and timing provenance are explicitly verified.
+lab_provenance_required: true
+
 source_workspace:
   path: /home/horus/robotics_thesis/lab_myros2_ws
   git_commit: unknown

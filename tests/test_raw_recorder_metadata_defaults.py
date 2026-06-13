@@ -34,6 +34,20 @@ class RawRecorderMetadataDefaultsTests(unittest.TestCase):
             text,
         )
 
+    def test_episode_metadata_defaults_enable_strict_lab_provenance(self):
+        text = Path("configs/raw_recorder/episode_metadata_defaults.example.yaml").read_text()
+
+        self.assertIn("lab_provenance_required: true", text)
+        self.assertIn("source_workspace:", text)
+        self.assertIn("live_graph_verification:", text)
+
+    def test_schema_plan_example_enables_strict_lab_provenance(self):
+        text = Path("docs/raw_recorder_schema_plan.md").read_text()
+
+        self.assertIn("lab_provenance_required: true", text)
+        self.assertIn("source_workspace:", text)
+        self.assertIn("Strict lab/source provenance readiness", text)
+
 
 if __name__ == "__main__":
     unittest.main()

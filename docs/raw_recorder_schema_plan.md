@@ -285,7 +285,7 @@ Required episode success/failure metadata:
 | Field | Requirement |
 | --- | --- |
 | `success` | Boolean, required by current raw metadata validation. |
-| `failure_reason` | Nullable string, required by current raw metadata validation. |
+| `failure_reason` | Nullable string, required by current raw metadata validation. Must be non-empty when `success` is `false`; use `null` only for successful reviewed episodes. |
 | `episode_start`, `episode_stop` | Events with timestamps. |
 | `abort_reason` | Required when an episode is aborted. |
 | `operator_notes` | Optional free-text notes, but the field should exist or be represented in events. |
@@ -632,8 +632,13 @@ geometry_type: round_peg_round_hole
 orientation_type: vertical_insertion
 collection_method: unknown_real_collection_method
 action_label_primary: measured_tcp_delta
+# Keep the default explicitly non-successful until the episode is reviewed.
+# For a successful reviewed episode, set:
+#   success: true
+#   failure_reason: null
+# For a failed reviewed episode, keep success false and replace the placeholder below.
 success: false
-failure_reason: null
+failure_reason: unannotated_episode_replace_before_training
 operator_id: unknown
 site: lab_workstation
 calibration_version: unknown

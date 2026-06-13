@@ -9,8 +9,13 @@ geometry_type: round_peg_round_hole
 orientation_type: vertical_insertion
 collection_method: unknown_real_collection_method
 action_label_primary: measured_tcp_delta
+# Keep the default explicitly non-successful until the episode is reviewed.
+# For a successful reviewed episode, set:
+#   success: true
+#   failure_reason: null
+# For a failed reviewed episode, keep success false and replace the placeholder below.
 success: false
-failure_reason: null
+failure_reason: unannotated_episode_replace_before_training
 fps: 30
 
 operator_id: unknown

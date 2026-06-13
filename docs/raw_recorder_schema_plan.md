@@ -154,13 +154,13 @@ Suggested `streams/index.json` top-level fields:
 | `schema_version` | Raw real-episode schema version, for example `raw_real_v0`. |
 | `streams` | Object keyed by stream name. Each entry records `path`, `kind`, `required`, `source_name`, `source_type`, `units`, `frame_id`, `record_count`, `expected_rate_hz`, and `observed_rate_hz`. |
 | `timebase` | Declares timestamp fields used across streams and whether clocks are ROS time, system wall time, monotonic time, controller time, or camera hardware time. |
-| `alignment_policy` | Declares that offline processing aligns streams later and that raw capture keeps native timestamps. |
+| `alignment_policy` | Declares the current `raw_real_v0` conversion policy: converter-ready streams carry an aligned episode-level `record_index`; raw source timestamps are preserved for diagnostics. |
 
 Suggested JSONL record style:
 
 | Common field | Purpose |
 | --- | --- |
-| `record_index` | Monotonic per-stream integer assigned by recorder. |
+| `record_index` | For converter-ready `raw_real_v0`, an episode-level aligned sample index shared by `robot_state_rt`, `joint_states`, `external_camera`, `wrist_camera`, and aligned optional `gripper_state`. Native per-stream counters should be stored in a separate field if needed. |
 | `source_name` | Exact ROS topic or service name as observed live. |
 | `source_type` | ROS message/service type string or recorder adapter type. |
 | `source_stamp` | Original message header timestamp or controller timestamp when available. |
@@ -168,6 +168,16 @@ Suggested JSONL record style:
 | `monotonic_stamp` | Recorder monotonic-clock timestamp for jitter analysis. |
 | `frame_id` | ROS frame ID or explicit frame name. |
 | `data` | Stream-specific flat numeric arrays, strings, and status fields. |
+
+Current `raw_real_v0` conversion alignment policy:
+
+- The raw recorder may capture native sensor timestamps, controller timestamps, receipt times, and native per-stream counters for auditability.
+- Before an episode is converter-ready, `robot_state_rt`, `joint_states`, `external_camera`, `wrist_camera`, and aligned optional `gripper_state` records must carry the same episode-level aligned `record_index` values.
+- `source_stamp` remains the original sensor/source time and is used for synchronization diagnostics.
+- `receipt_stamp` and `monotonic_stamp` remain recorder/debug timing signals.
+- The current converter does not perform timestamp-based alignment, resampling, or interpolation.
+- Large cross-stream `source_stamp` offsets between robot_state_rt and required camera streams block conversion readiness unless a future schema introduces an explicit clock-offset model.
+- A future schema version may add timestamp-based alignment, but this current version intentionally requires aligned `record_index` values for converter-required streams.
 
 ## 4. Required Raw Fields
 
@@ -180,7 +190,7 @@ Required timestamp fields:
 | `source_stamp` | Original message header time, controller time, or camera hardware timestamp when available. Must include seconds/nanoseconds or a clearly documented numeric unit. |
 | `receipt_stamp` | Recorder receipt timestamp for each record. |
 | `monotonic_stamp` | Recorder monotonic time for ordering and latency diagnostics. |
-| `record_index` | Monotonic per stream. |
+| `record_index` | Episode-level aligned sample index for converter-required streams in current `raw_real_v0`; not merely a native per-stream counter. |
 | `episode_time` | Optional at capture but required by processed conversion, computed offline relative to episode start. |
 | `timebase_metadata` | Required in `streams/index.json` or `metadata.json`; must identify ROS time versus system time versus controller/camera hardware time. |
 
@@ -191,7 +201,7 @@ Required external RGB image fields:
 | `image_path` or `chunk_path` | Path to stored image frame or chunk relative to the episode root. |
 | `source_name` | Exact source topic name. Camera topics are unknown from static inspection and must be verified live. |
 | `source_type` | Expected ROS type if recorded through ROS, likely `sensor_msgs/msg/Image`, but live type must be verified. |
-| `source_stamp`, `receipt_stamp`, `record_index` | Required for alignment and jitter checks. |
+| `source_stamp`, `receipt_stamp`, `record_index` | Required for aligned sample identity and jitter checks. `record_index` is the shared aligned sample index for current conversion; `source_stamp` remains the camera/source timestamp. |
 | `frame_id` | Camera optical or camera link frame from message header. |
 | `encoding` | RGB encoding, for example `rgb8` or `bgr8`, as recorded. |
 | `width`, `height`, `channels` | Image dimensions. |
@@ -205,7 +215,7 @@ Required wrist/TCP RGB image fields:
 | `image_path` or `chunk_path` | Path relative to episode root. |
 | `source_name` | Exact wrist/TCP camera source topic once verified live. |
 | `source_type` | Expected ROS type if recorded through ROS, likely `sensor_msgs/msg/Image`, but live type must be verified. |
-| `source_stamp`, `receipt_stamp`, `record_index` | Required for alignment and jitter checks. |
+| `source_stamp`, `receipt_stamp`, `record_index` | Required for aligned sample identity and jitter checks. `record_index` is the shared aligned sample index for current conversion; `source_stamp` remains the camera/source timestamp. |
 | `frame_id` | Wrist/TCP camera optical or camera link frame. |
 | `encoding`, `width`, `height`, `channels` | Image representation details. |
 | `camera_role` | `wrist_rgb` or `tcp_rgb`. |
@@ -367,7 +377,7 @@ Offline computation requirements:
 | Resolve orientation convention | The ROS report says Doosan task pose comments indicate `[x, y, z, a, b, c]`, mm/deg, likely Euler ZYZ. This must be verified before conversion to `xyzw` quaternion. |
 | Choose frame explicitly | TCP deltas should be computed in the selected base/world/task frame consistently. Do not mix base, user, flange, or tool frames. |
 | Handle quaternion sign | Quaternions `q` and `-q` are equivalent; shortest-rotation handling should remain in the conversion path. |
-| Align frame pairs | Use the processed frame timeline after camera/robot stream alignment, not arbitrary raw row adjacency if streams have different rates. |
+| Align frame pairs | Current `raw_real_v0` conversion uses the shared episode-level `record_index` as the aligned frame key. It does not timestamp-resample or interpolate streams. |
 | Terminal action policy | The final processed frame has no next measured pose and should use terminal zero padding, then be excluded from LeRobot/ForceVLA export as current code already does. |
 | Preserve commanded context separately | Teleop twist, Servo twist, JogMulti requests, and trajectories should remain in `command_context` or optional action streams for diagnostics only. |
 
@@ -378,9 +388,9 @@ Validation should be layered so that raw capture problems are caught before proc
 | Stage | Purpose | Example checks |
 | --- | --- | --- |
 | Raw episode structural validation | Confirm the real raw episode folder is well-formed. | Required files exist; stream manifests are readable; required streams are present; schema version is known; no empty required streams. |
-| Timestamp monotonicity | Confirm each stream can be ordered and aligned. | Strictly increasing `record_index`; monotonic `source_stamp` where expected; monotonic `receipt_stamp`; no negative episode-time values; report clock regressions. |
+| Timestamp monotonicity | Confirm each stream can be ordered and aligned. | Sequential aligned `record_index`; monotonic `source_stamp` where expected; monotonic `receipt_stamp`; no negative episode-time values; report clock regressions. |
 | Stream completeness | Confirm required observation streams exist across the episode. | Joint state records, TCP pose records, wrench records, both camera streams, robot state, TF, metadata, events, and calibration refs have adequate coverage. |
-| Camera frame count and timestamp checks | Confirm image streams can be aligned to robot state. | Nonzero frame counts; image files/chunks exist; dimensions/encoding stable or documented; frame timestamps within episode bounds; dropped frame counts reported; external and wrist camera rates plausible. |
+| Camera frame count and timestamp checks | Confirm image streams can be aligned to robot state. | Nonzero frame counts; image files/chunks exist; dimensions/encoding stable or documented; frame timestamps within tolerance of robot_state_rt by aligned `record_index`; dropped frame counts reported; external and wrist camera rates plausible. |
 | Robot state numeric sanity checks | Confirm numeric robot streams are usable. | Finite values; six joints; plausible joint positions/velocities; no impossible TCP jumps; wrench finite; robot mode/state/control mode present; units declared. |
 | TCP pose availability checks | Confirm action labels can be computed. | Consecutive TCP pose availability across processed timeline; orientation conversion possible; frame and TCP/tool metadata present; no missing pose pairs except terminal frame. |
 | Processed episode validation | Confirm raw-to-processed conversion output matches existing schema. | Current `validate_processed_episode` checks metadata, frames, timestamps, image paths, 25D model state, 7D action, terminal padding, and final zero action. |
@@ -648,6 +658,10 @@ raw_candidates:
     tcp_translation_units: millimeters
     tcp_orientation_units: degrees
     tcp_orientation_convention: unknown_verify_euler_order
+    converter_supported_tcp_orientation_conventions:
+      - rotation_vector_degrees
+      - rotation_vector_radians
+    current_converter_rejects_unknown_euler_conventions: true
     joint_position_units: degrees
     joint_velocity_units: degrees_per_second
     force_units: N
@@ -661,6 +675,9 @@ frames:
   wrist_camera_frame: unknown
 conversion_policy:
   compute_action_from: measured_consecutive_tcp_pose
+  record_index_policy: episode_level_aligned_sample_index_for_converter_streams
+  timestamp_alignment: diagnostics_only_no_interpolation_in_raw_real_v0
+  block_large_required_camera_source_stamp_offsets: true
   command_streams_are_labels: false
   terminal_padding_action: [0, 0, 0, 0, 0, 0, 0]
 ```

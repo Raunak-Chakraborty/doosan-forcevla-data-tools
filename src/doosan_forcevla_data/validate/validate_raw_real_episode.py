@@ -40,6 +40,32 @@ JSONL_STREAM_NAMES = {
 }
 
 CAMERA_STREAM_NAMES = {"external_camera", "wrist_camera"}
+CONVERTER_REQUIRED_ALIGNMENT_STREAMS = ["joint_states", "external_camera", "wrist_camera"]
+CONVERTER_ALIGNED_OPTIONAL_STREAMS = ["gripper_state"]
+ROTATION_VECTOR_DEGREES = "rotation_vector_degrees"
+ROTATION_VECTOR_RADIANS = "rotation_vector_radians"
+
+SUPPORTED_TCP_POSITION_UNITS = {"mm", "millimeter", "millimeters", "m", "meter", "meters"}
+SUPPORTED_TCP_ORIENTATION_UNITS = {"deg", "degree", "degrees", "rad", "radian", "radians"}
+SUPPORTED_JOINT_POSITION_UNITS = {"deg", "degree", "degrees", "rad", "radian", "radians"}
+SUPPORTED_JOINT_VELOCITY_UNITS = {
+    "deg/s",
+    "deg_per_s",
+    "degree/s",
+    "degrees/s",
+    "degrees_per_second",
+    "rad/s",
+    "rad_per_s",
+    "radian/s",
+    "radians/s",
+    "radians_per_second",
+}
+DEGREE_UNITS = {"deg", "degree", "degrees"}
+RADIAN_UNITS = {"rad", "radian", "radians"}
+
+
+def _is_non_empty_string(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
 
 
 def _is_finite_number(value: Any) -> bool:
@@ -52,6 +78,82 @@ def _is_non_negative_int(value: Any) -> bool:
 
 def _is_positive_int(value: Any) -> bool:
     return not isinstance(value, bool) and isinstance(value, int) and value > 0
+
+
+def _is_path_under_root(root: Path, path: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except (OSError, RuntimeError, ValueError):
+        return False
+    return True
+
+
+def _is_numeric_list(value: Any, expected_len: int) -> bool:
+    return isinstance(value, list) and len(value) == expected_len and all(_is_finite_number(item) for item in value)
+
+
+def _normalized_unit(units: dict[str, Any], key: str) -> str | None:
+    value = units.get(key)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip().lower().replace(" ", "_")
+
+
+def _combined_units(record: dict[str, Any] | None, stream_entry: dict[str, Any] | None) -> dict[str, Any]:
+    units: dict[str, Any] = {}
+    if isinstance(stream_entry, dict) and isinstance(stream_entry.get("units"), dict):
+        units.update(stream_entry["units"])
+    if isinstance(record, dict) and isinstance(record.get("units"), dict):
+        units.update(record["units"])
+    return units
+
+
+def _is_synthetic_episode(
+    metadata: dict[str, Any] | None,
+    recorder_report: dict[str, Any] | None,
+    streams_index: dict[str, Any] | None,
+) -> bool:
+    collection_method = metadata.get("collection_method") if isinstance(metadata, dict) else None
+    recorder_version = metadata.get("recorder_version") if isinstance(metadata, dict) else None
+    return any(
+        [
+            isinstance(collection_method, str) and "synthetic" in collection_method.lower(),
+            isinstance(recorder_version, str) and "synthetic" in recorder_version.lower(),
+            isinstance(recorder_report, dict) and recorder_report.get("synthetic") is True,
+            isinstance(streams_index, dict) and streams_index.get("synthetic") is True,
+        ]
+    )
+
+
+def _tcp_orientation_convention(
+    metadata: dict[str, Any] | None,
+    recorder_report: dict[str, Any] | None,
+) -> Any:
+    if isinstance(metadata, dict) and metadata.get("tcp_orientation_convention") is not None:
+        return metadata.get("tcp_orientation_convention")
+    if isinstance(recorder_report, dict):
+        return recorder_report.get("tcp_orientation_convention")
+    return None
+
+
+def _supported_unit_error(
+    units: dict[str, Any],
+    key: str,
+    supported: set[str],
+    context: str,
+) -> str | None:
+    unit = _normalized_unit(units, key)
+    if unit in supported:
+        return None
+    return f"{context}: unsupported or missing {key} unit: {unit!r}"
+
+
+def _orientation_unit_matches_convention(unit: str | None, convention: Any, context: str) -> str | None:
+    if convention == ROTATION_VECTOR_DEGREES and unit not in DEGREE_UNITS:
+        return f"{context}: tcp_orientation unit {unit!r} does not match tcp_orientation_convention='rotation_vector_degrees'"
+    if convention == ROTATION_VECTOR_RADIANS and unit not in RADIAN_UNITS:
+        return f"{context}: tcp_orientation unit {unit!r} does not match tcp_orientation_convention='rotation_vector_radians'"
+    return None
 
 
 def _read_json_object(path: Path, errors: list[str], label: str) -> dict[str, Any] | None:
@@ -98,24 +200,55 @@ def _check_metadata(metadata: dict[str, Any], path: Path, errors: list[str]) -> 
     if metadata.get("schema_version") != RAW_REAL_SCHEMA_VERSION:
         errors.append(f"{path}: schema_version must be {RAW_REAL_SCHEMA_VERSION!r}")
 
+    for key in [
+        "episode_id",
+        "task_instruction",
+        "geometry_type",
+        "orientation_type",
+        "collection_method",
+        "action_label_primary",
+        "robot_type",
+        "recorder_version",
+    ]:
+        if key in metadata and not _is_non_empty_string(metadata[key]):
+            errors.append(f"{path}: {key} must be a non-empty string")
+
     if "success" in metadata and not isinstance(metadata["success"], bool):
         errors.append(f"{path}: success must be a boolean")
+
+    failure_reason = metadata.get("failure_reason")
+    if failure_reason is not None and not _is_non_empty_string(failure_reason):
+        errors.append(f"{path}: failure_reason must be null or a non-empty string")
+    if metadata.get("success") is False and not _is_non_empty_string(failure_reason):
+        errors.append(f"{path}: failure_reason must be a non-empty string when success is false")
 
     fps = metadata.get("fps")
     if not _is_finite_number(fps) or float(fps) <= 0.0:
         errors.append(f"{path}: fps must be a positive finite number")
 
+    source_workspace = metadata.get("source_workspace")
+    if "source_workspace" in metadata:
+        if not isinstance(source_workspace, dict):
+            errors.append(f"{path}: source_workspace must be a JSON object")
+        else:
+            if not _is_non_empty_string(source_workspace.get("path")):
+                errors.append(f"{path}: source_workspace.path must be a non-empty string")
+            if "verified" in source_workspace and not isinstance(source_workspace["verified"], bool):
+                errors.append(f"{path}: source_workspace.verified must be a boolean when present")
 
-def _valid_source_stamp(value: Any) -> bool:
+
+def _source_stamp_seconds(value: Any) -> float | None:
     if _is_finite_number(value):
-        return True
+        return float(value)
     if not isinstance(value, dict):
-        return False
+        return None
     sec = value.get("sec")
     nanosec = value.get("nanosec")
     if not _is_finite_number(sec) or not _is_finite_number(nanosec):
-        return False
-    return 0.0 <= float(nanosec) < 1_000_000_000.0
+        return None
+    if not 0.0 <= float(nanosec) < 1_000_000_000.0:
+        return None
+    return float(sec) + float(nanosec) * 1e-9
 
 
 def _validate_common_record_fields(
@@ -124,6 +257,7 @@ def _validate_common_record_fields(
     stream_name: str,
     errors: list[str],
 ) -> None:
+    previous_source: float | None = None
     previous_receipt: float | None = None
     previous_monotonic: float | None = None
 
@@ -135,8 +269,14 @@ def _validate_common_record_fields(
 
         if "source_stamp" not in record:
             errors.append(f"{context}: source_stamp is missing")
-        elif not _valid_source_stamp(record["source_stamp"]):
-            errors.append(f"{context}: source_stamp must be numeric or an object with finite sec/nanosec")
+        else:
+            source = _source_stamp_seconds(record["source_stamp"])
+            if source is None:
+                errors.append(f"{context}: source_stamp must be numeric or an object with finite sec/nanosec")
+            else:
+                if previous_source is not None and source < previous_source:
+                    errors.append(f"{context}: source_stamp must be monotonic nondecreasing")
+                previous_source = source
 
         receipt_stamp = record.get("receipt_stamp")
         if not _is_finite_number(receipt_stamp):
@@ -187,10 +327,30 @@ def _stream_path(root: Path, stream_name: str, entry: dict[str, Any], errors: li
         errors.append(f"streams/index.json: stream {stream_name} path must be relative to episode root")
         return None
     path = root / relative_path
+    if not _is_path_under_root(root, path):
+        errors.append(f"streams/index.json: stream {stream_name} path must stay inside episode root")
+        return None
     if not path.exists():
         errors.append(f"{path}: stream {stream_name} path does not exist")
         return None
     return path
+
+
+def _check_stream_record_count(
+    stream_entry: dict[str, Any],
+    stream_name: str,
+    records: list[dict[str, Any]],
+    path: Path,
+    required: bool,
+    errors: list[str],
+) -> None:
+    record_count = stream_entry.get("record_count")
+    if _is_non_negative_int(record_count) and record_count != len(records):
+        errors.append(
+            f"{path}: stream {stream_name} record_count {record_count} does not match actual record count {len(records)}"
+        )
+    if required and not records:
+        errors.append(f"{path}: required stream {stream_name} must contain at least one record")
 
 
 def _validate_required_stream_entry(
@@ -229,6 +389,8 @@ def _validate_optional_stream_entry(
     if not isinstance(entry, dict):
         errors.append(f"streams/index.json: optional stream {stream_name} entry must be a JSON object")
         return None
+    if "required" in entry and entry.get("required") is not False:
+        errors.append(f"streams/index.json: optional stream {stream_name} required must be false when present")
     if "record_count" in entry and not _is_non_negative_int(entry.get("record_count")):
         errors.append(
             f"streams/index.json: optional stream {stream_name} record_count must be a non-negative integer"
@@ -264,6 +426,14 @@ def _validate_joint_states(
         joint_names = record.get("joint_names")
         if not isinstance(joint_names, list) or len(joint_names) != 6:
             errors.append(f"{context}: joint_names must be a list of length 6")
+        else:
+            for joint_idx, joint_name in enumerate(joint_names):
+                if not _is_non_empty_string(joint_name):
+                    errors.append(f"{context}: joint_names[{joint_idx}] must be a non-empty string")
+            if all(isinstance(joint_name, str) for joint_name in joint_names) and len(set(joint_names)) != len(
+                joint_names
+            ):
+                errors.append(f"{context}: joint_names must be unique")
         _check_numeric_list(record, "position", 6, context, errors)
         _check_numeric_list(record, "velocity", 6, context, errors)
         if not isinstance(record.get("units"), dict) and not isinstance(stream_entry.get("units"), dict):
@@ -274,8 +444,6 @@ def _validate_robot_state_rt(records: list[dict[str, Any]], path: Path, errors: 
     for idx, record in enumerate(records):
         context = f"{path}: robot_state_rt record {idx}"
         _check_numeric_list(record, "actual_tcp_position", 6, context, errors)
-        _check_numeric_list(record, "actual_joint_position", 6, context, errors)
-        _check_numeric_list(record, "actual_joint_velocity", 6, context, errors)
 
         has_external_tcp_force = "external_tcp_force" in record
         has_raw_force_torque = "raw_force_torque" in record
@@ -287,8 +455,8 @@ def _validate_robot_state_rt(records: list[dict[str, Any]], path: Path, errors: 
             _check_numeric_list(record, "raw_force_torque", 6, context, errors)
 
         for key in ["robot_mode", "robot_state", "control_mode"]:
-            if key not in record:
-                errors.append(f"{context}: {key} must exist")
+            if not _is_non_empty_string(record.get(key)):
+                errors.append(f"{context}: {key} must be a non-empty string")
 
 
 def _validate_tf_records(records: list[dict[str, Any]], path: Path, stream_name: str, errors: list[str]) -> None:
@@ -296,6 +464,61 @@ def _validate_tf_records(records: list[dict[str, Any]], path: Path, stream_name:
         transforms = record.get("transforms")
         if not isinstance(transforms, list):
             errors.append(f"{path}: {stream_name} record {idx}: transforms must be a list")
+            continue
+        for transform_idx, transform in enumerate(transforms):
+            context = f"{path}: {stream_name} record {idx} transform {transform_idx}"
+            if not isinstance(transform, dict):
+                errors.append(f"{context}: transform must be a JSON object")
+                continue
+            for key in ["parent_frame", "child_frame"]:
+                if not _is_non_empty_string(transform.get(key)):
+                    errors.append(f"{context}: {key} must be a non-empty string")
+            _check_numeric_list(transform, "translation", 3, context, errors)
+            rotation = transform.get("rotation_xyzw", transform.get("rotation"))
+            if not isinstance(rotation, list):
+                errors.append(f"{context}: rotation_xyzw must be a list of length 4")
+            elif len(rotation) != 4:
+                errors.append(f"{context}: rotation_xyzw length must be 4, got {len(rotation)}")
+            else:
+                for rotation_idx, value in enumerate(rotation):
+                    if not _is_finite_number(value):
+                        errors.append(f"{context}: rotation_xyzw[{rotation_idx}] must be a finite number")
+
+
+def _validate_gripper_state(records: list[dict[str, Any]], path: Path, errors: list[str]) -> None:
+    for idx, record in enumerate(records):
+        context = f"{path}: gripper_state record {idx}"
+        has_position = "gripper_position" in record
+        has_width = "gripper_width_m" in record
+        if not has_position and not has_width:
+            errors.append(f"{context}: gripper_position or gripper_width_m must exist")
+        if has_position and not _is_finite_number(record.get("gripper_position")):
+            errors.append(f"{context}: gripper_position must be a finite number")
+        if has_width:
+            width = record.get("gripper_width_m")
+            if not _is_finite_number(width):
+                errors.append(f"{context}: gripper_width_m must be a finite number")
+            elif float(width) < 0.0:
+                errors.append(f"{context}: gripper_width_m must be non-negative")
+
+
+def _validate_command_context(
+    records: list[dict[str, Any]],
+    path: Path,
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    for idx, record in enumerate(records):
+        context = f"{path}: command_context record {idx}"
+        if "command_kind" in record and not _is_non_empty_string(record.get("command_kind")):
+            errors.append(f"{context}: command_kind must be a non-empty string when present")
+        if "commanded_twist" in record:
+            _check_numeric_list(record, "commanded_twist", 6, context, errors)
+        action_like_keys = [key for key in ["action_label", "measured_action", "action"] if key in record]
+        if action_like_keys:
+            warnings.append(
+                f"{context}: action-like fields are diagnostic only and are not action labels: {', '.join(action_like_keys)}"
+            )
 
 
 def _validate_jsonl_stream(
@@ -303,12 +526,15 @@ def _validate_jsonl_stream(
     stream_name: str,
     stream_entry: dict[str, Any],
     errors: list[str],
-) -> None:
+    warnings: list[str],
+    required: bool,
+) -> list[dict[str, Any]]:
     if not path.is_file():
         errors.append(f"{path}: stream {stream_name} must be a JSONL file")
-        return
+        return []
 
     records = _read_jsonl_objects(path, errors, stream_name)
+    _check_stream_record_count(stream_entry, stream_name, records, path, required, errors)
     _validate_common_record_fields(records, path, stream_name, errors)
 
     if stream_name == "joint_states":
@@ -317,19 +543,31 @@ def _validate_jsonl_stream(
         _validate_robot_state_rt(records, path, errors)
     elif stream_name in {"tf", "tf_static"}:
         _validate_tf_records(records, path, stream_name, errors)
+    elif stream_name == "gripper_state":
+        _validate_gripper_state(records, path, errors)
+    elif stream_name == "command_context":
+        _validate_command_context(records, path, errors, warnings)
+    return records
 
 
-def _validate_camera_index(root: Path, stream_path: Path, stream_name: str, errors: list[str]) -> None:
+def _validate_camera_index(
+    root: Path,
+    stream_path: Path,
+    stream_name: str,
+    stream_entry: dict[str, Any],
+    errors: list[str],
+) -> list[dict[str, Any]]:
     if not stream_path.is_dir():
         errors.append(f"{stream_path}: camera stream {stream_name} must be a directory")
-        return
+        return []
 
     index_path = stream_path / "index.jsonl"
     if not index_path.is_file():
         errors.append(f"{index_path}: camera stream {stream_name} index.jsonl is missing")
-        return
+        return []
 
     records = _read_jsonl_objects(index_path, errors, f"{stream_name} index")
+    _check_stream_record_count(stream_entry, stream_name, records, index_path, required=True, errors=errors)
     _validate_common_record_fields(records, index_path, stream_name, errors)
 
     for idx, record in enumerate(records):
@@ -341,8 +579,20 @@ def _validate_camera_index(root: Path, stream_path: Path, stream_name: str, erro
             image_relative = Path(image_path_value)
             if image_relative.is_absolute() or ".." in image_relative.parts:
                 errors.append(f"{context}: image_path must be relative to episode root")
-            elif not (root / image_relative).is_file():
-                errors.append(f"{context}: image_path does not exist: {root / image_relative}")
+            else:
+                image_path = root / image_relative
+                if not _is_path_under_root(root, image_path):
+                    errors.append(f"{context}: image_path must stay inside episode root")
+                elif not image_path.is_file():
+                    errors.append(f"{context}: image_path does not exist: {image_path}")
+                else:
+                    try:
+                        image_size = image_path.stat().st_size
+                    except OSError as exc:
+                        errors.append(f"{context}: could not stat image_path {image_path}: {exc}")
+                    else:
+                        if image_size <= 0:
+                            errors.append(f"{context}: image_path must reference a non-empty file: {image_path}")
 
         for key in ["width", "height", "channels"]:
             if not _is_positive_int(record.get(key)):
@@ -351,6 +601,302 @@ def _validate_camera_index(root: Path, stream_path: Path, stream_name: str, erro
         for key in ["encoding", "frame_id"]:
             if not isinstance(record.get(key), str) or not record.get(key):
                 errors.append(f"{context}: {key} must be a non-empty string")
+
+    return records
+
+
+def _validate_events(
+    records: list[dict[str, Any]],
+    path: Path,
+    metadata: dict[str, Any] | None,
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    if not records:
+        errors.append(f"{path}: events must contain at least one record")
+        return
+
+    previous_timestamp: float | None = None
+    event_names: list[str] = []
+    for idx, record in enumerate(records):
+        context = f"{path}: event record {idx}"
+        timestamp = record.get("timestamp")
+        if not _is_finite_number(timestamp):
+            errors.append(f"{context}: timestamp must be a finite number")
+        else:
+            timestamp_float = float(timestamp)
+            if previous_timestamp is not None and timestamp_float < previous_timestamp:
+                errors.append(f"{context}: timestamp must be monotonic nondecreasing")
+            previous_timestamp = timestamp_float
+
+        event_name = record.get("event")
+        if not _is_non_empty_string(event_name):
+            errors.append(f"{context}: event must be a non-empty string")
+        else:
+            event_names.append(event_name)
+
+    if event_names and event_names[0] != "episode_start":
+        warnings.append(f"{path}: first event is not episode_start")
+    if metadata is None or not isinstance(metadata.get("success"), bool):
+        return
+    if metadata["success"] and "success" not in event_names:
+        warnings.append(f"{path}: metadata success is true but events do not contain success")
+    if metadata["success"] is False and not any("fail" in event_name.lower() for event_name in event_names):
+        warnings.append(f"{path}: metadata success is false but events do not contain a failure event")
+
+
+def _record_index_set(records: list[dict[str, Any]]) -> set[int]:
+    indexes: set[int] = set()
+    for record in records:
+        record_index = record.get("record_index")
+        if _is_non_negative_int(record_index):
+            indexes.add(record_index)
+    return indexes
+
+
+def _alignment_details(primary_indexes: set[int], candidate_indexes: set[int]) -> str:
+    details: list[str] = []
+    missing = sorted(primary_indexes - candidate_indexes)
+    extra = sorted(candidate_indexes - primary_indexes)
+    if missing:
+        details.append(f"missing robot_state_rt record_index values {missing[:10]}")
+    if extra:
+        details.append(f"extra record_index values {extra[:10]}")
+    return ", ".join(details) if details else "index sets differ"
+
+
+def _check_record_index_alignment(
+    records_by_stream: dict[str, list[dict[str, Any]]],
+    errors: list[str],
+    warnings: list[str],
+) -> None:
+    primary_records = records_by_stream.get("robot_state_rt", [])
+    primary_indexes = _record_index_set(primary_records)
+    if not primary_indexes:
+        return
+
+    for stream_name in CONVERTER_REQUIRED_ALIGNMENT_STREAMS:
+        if stream_name not in records_by_stream:
+            continue
+        candidate_indexes = _record_index_set(records_by_stream[stream_name])
+        if candidate_indexes != primary_indexes:
+            errors.append(
+                f"{stream_name}: record_index alignment with robot_state_rt failed: "
+                f"{_alignment_details(primary_indexes, candidate_indexes)}"
+            )
+
+    for stream_name in CONVERTER_ALIGNED_OPTIONAL_STREAMS:
+        if stream_name not in records_by_stream:
+            continue
+        candidate_indexes = _record_index_set(records_by_stream[stream_name])
+        if candidate_indexes != primary_indexes:
+            errors.append(
+                f"{stream_name}: record_index alignment with robot_state_rt failed: "
+                f"{_alignment_details(primary_indexes, candidate_indexes)}"
+            )
+
+    for stream_name in ["tf", "command_context"]:
+        if stream_name not in records_by_stream:
+            continue
+        candidate_indexes = _record_index_set(records_by_stream[stream_name])
+        if candidate_indexes and candidate_indexes != primary_indexes:
+            warnings.append(
+                f"{stream_name}: record_index differs from robot_state_rt: "
+                f"{_alignment_details(primary_indexes, candidate_indexes)}"
+            )
+
+
+def _records_by_index(records: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    indexed: dict[int, dict[str, Any]] = {}
+    for record in records:
+        record_index = record.get("record_index")
+        if _is_non_negative_int(record_index) and record_index not in indexed:
+            indexed[record_index] = record
+    return indexed
+
+
+def timestamp_tolerance_seconds(metadata: dict[str, Any] | None) -> float:
+    if metadata is not None:
+        fps = metadata.get("fps")
+        if _is_finite_number(fps) and float(fps) > 0.0:
+            return max(0.1, 2.0 / float(fps))
+    return 0.1
+
+
+def _source_stamp_alignment_errors(
+    records_by_stream: dict[str, list[dict[str, Any]]],
+    metadata: dict[str, Any] | None,
+) -> list[str]:
+    robot_by_index = _records_by_index(records_by_stream.get("robot_state_rt", []))
+    if not robot_by_index:
+        return []
+
+    errors: list[str] = []
+    tolerance = timestamp_tolerance_seconds(metadata)
+    for stream_name in ["external_camera", "wrist_camera"]:
+        stream_by_index = _records_by_index(records_by_stream.get(stream_name, []))
+        common_indexes = sorted(set(robot_by_index) & set(stream_by_index))
+        for record_index in common_indexes:
+            robot_stamp = _source_stamp_seconds(robot_by_index[record_index].get("source_stamp"))
+            stream_stamp = _source_stamp_seconds(stream_by_index[record_index].get("source_stamp"))
+            if robot_stamp is None or stream_stamp is None:
+                continue
+            if abs(stream_stamp - robot_stamp) > tolerance:
+                errors.append(
+                    f"{stream_name}: source_stamp differs from robot_state_rt by more than "
+                    f"{tolerance:.3f}s at record_index {record_index}; raw_real_v0 conversion requires "
+                    "aligned episode-level record_index values"
+                )
+                break
+    return errors
+
+
+def raw_real_conversion_readiness_errors(
+    metadata: dict[str, Any] | None,
+    recorder_report: dict[str, Any] | None,
+    streams_index: dict[str, Any] | None,
+    streams: dict[str, Any] | None,
+    records_by_stream: dict[str, list[dict[str, Any]]],
+) -> list[str]:
+    """Return validator errors for raw_real_v0 data the converter would reject."""
+
+    errors = _source_stamp_alignment_errors(records_by_stream, metadata)
+    if _is_synthetic_episode(metadata, recorder_report, streams_index):
+        return errors
+    if not isinstance(streams, dict):
+        return errors
+
+    convention = _tcp_orientation_convention(metadata, recorder_report)
+    if convention not in {ROTATION_VECTOR_DEGREES, ROTATION_VECTOR_RADIANS}:
+        errors.append(
+            "metadata/recorder_report: tcp_orientation_convention must be one of "
+            "'rotation_vector_degrees' or 'rotation_vector_radians' for non-synthetic conversion; "
+            "tcp_orientation_convention_verified alone is not sufficient"
+        )
+
+    robot_entry = streams.get("robot_state_rt") if isinstance(streams.get("robot_state_rt"), dict) else {}
+    joint_entry = streams.get("joint_states") if isinstance(streams.get("joint_states"), dict) else {}
+    robot_records = records_by_stream.get("robot_state_rt", [])
+    joint_by_index = _records_by_index(records_by_stream.get("joint_states", []))
+
+    for idx, robot_record in enumerate(robot_records):
+        context = f"robot_state_rt record {idx}"
+        robot_units = _combined_units(robot_record, robot_entry)
+
+        tcp_position_error = _supported_unit_error(
+            robot_units,
+            "tcp_position",
+            SUPPORTED_TCP_POSITION_UNITS,
+            f"{context} actual_tcp_position",
+        )
+        if tcp_position_error is not None:
+            errors.append(tcp_position_error)
+
+        tcp_orientation_error = _supported_unit_error(
+            robot_units,
+            "tcp_orientation",
+            SUPPORTED_TCP_ORIENTATION_UNITS,
+            f"{context} actual_tcp_position[3:6]",
+        )
+        if tcp_orientation_error is not None:
+            errors.append(tcp_orientation_error)
+        else:
+            mismatch_error = _orientation_unit_matches_convention(
+                _normalized_unit(robot_units, "tcp_orientation"),
+                convention,
+                f"{context} actual_tcp_position[3:6]",
+            )
+            if mismatch_error is not None:
+                errors.append(mismatch_error)
+
+        record_index = robot_record.get("record_index")
+        joint_record = joint_by_index.get(record_index) if _is_non_negative_int(record_index) else None
+        joint_units = _combined_units(joint_record, joint_entry)
+
+        if _is_numeric_list(robot_record.get("actual_joint_position"), 6):
+            joint_position_error = _supported_unit_error(
+                robot_units,
+                "joint_position",
+                SUPPORTED_JOINT_POSITION_UNITS,
+                f"{context} actual_joint_position",
+            )
+            if joint_position_error is not None:
+                errors.append(joint_position_error)
+        elif not isinstance(joint_record, dict) or not _is_numeric_list(joint_record.get("position"), 6):
+            errors.append(
+                f"{context} actual_joint_position is missing/invalid and joint_states record_index "
+                f"{record_index!r} position is not valid for fallback"
+            )
+        else:
+            joint_position_error = _supported_unit_error(
+                joint_units,
+                "position",
+                SUPPORTED_JOINT_POSITION_UNITS,
+                f"joint_states record_index {record_index} position",
+            )
+            if joint_position_error is not None:
+                errors.append(joint_position_error)
+
+        if _is_numeric_list(robot_record.get("actual_joint_velocity"), 6):
+            joint_velocity_error = _supported_unit_error(
+                robot_units,
+                "joint_velocity",
+                SUPPORTED_JOINT_VELOCITY_UNITS,
+                f"{context} actual_joint_velocity",
+            )
+            if joint_velocity_error is not None:
+                errors.append(joint_velocity_error)
+        elif not isinstance(joint_record, dict) or not _is_numeric_list(joint_record.get("velocity"), 6):
+            errors.append(
+                f"{context} actual_joint_velocity is missing/invalid and joint_states record_index "
+                f"{record_index!r} velocity is not valid for fallback"
+            )
+        else:
+            joint_velocity_error = _supported_unit_error(
+                joint_units,
+                "velocity",
+                SUPPORTED_JOINT_VELOCITY_UNITS,
+                f"joint_states record_index {record_index} velocity",
+            )
+            if joint_velocity_error is not None:
+                errors.append(joint_velocity_error)
+
+    return errors
+
+
+def _warn_timestamp_mismatches(
+    records_by_stream: dict[str, list[dict[str, Any]]],
+    metadata: dict[str, Any] | None,
+    warnings: list[str],
+) -> None:
+    robot_by_index = _records_by_index(records_by_stream.get("robot_state_rt", []))
+    if not robot_by_index:
+        return
+    tolerance = timestamp_tolerance_seconds(metadata)
+
+    for stream_name in [
+        "joint_states",
+        "external_camera",
+        "wrist_camera",
+        "gripper_state",
+        "command_context",
+    ]:
+        if stream_name not in records_by_stream:
+            continue
+        stream_by_index = _records_by_index(records_by_stream[stream_name])
+        common_indexes = sorted(set(robot_by_index) & set(stream_by_index))
+        for stamp_key in ["receipt_stamp", "monotonic_stamp"]:
+            for record_index in common_indexes:
+                robot_stamp = robot_by_index[record_index].get(stamp_key)
+                stream_stamp = stream_by_index[record_index].get(stamp_key)
+                if not _is_finite_number(robot_stamp) or not _is_finite_number(stream_stamp):
+                    continue
+                if abs(float(stream_stamp) - float(robot_stamp)) > tolerance:
+                    warnings.append(
+                        f"{stream_name}: {stamp_key} differs from robot_state_rt by more than "
+                        f"{tolerance:.3f}s at record_index {record_index}"
+                    )
+                    break
 
 
 def validate_raw_real_episode(root_dir: str | Path) -> ValidationResult:
@@ -369,6 +915,8 @@ def validate_raw_real_episode(root_dir: str | Path) -> ValidationResult:
         path = root / relative_path
         if not path.is_file():
             errors.append(f"{path}: required file is missing")
+        elif not _is_path_under_root(root, path):
+            errors.append(f"{path}: required file must stay inside episode root")
     if errors:
         return ValidationResult(False, errors, warnings)
 
@@ -378,13 +926,17 @@ def validate_raw_real_episode(root_dir: str | Path) -> ValidationResult:
         _check_metadata(metadata, metadata_path, errors)
 
     _read_json_object(root / "calibration_refs.json", errors, "calibration_refs")
-    _read_json_object(root / "recorder_report.json", errors, "recorder_report")
-    _read_jsonl_objects(root / "events.jsonl", errors, "events")
+    recorder_report = _read_json_object(root / "recorder_report.json", errors, "recorder_report")
+    events = _read_jsonl_objects(root / "events.jsonl", errors, "events")
+    _validate_events(events, root / "events.jsonl", metadata, errors, warnings)
 
     streams_index_path = root / "streams" / "index.json"
     streams_index = _read_json_object(streams_index_path, errors, "streams/index")
     if streams_index is None:
         return ValidationResult(False, errors, warnings)
+
+    if streams_index.get("schema_version") != RAW_REAL_SCHEMA_VERSION:
+        errors.append(f"{streams_index_path}: schema_version must be {RAW_REAL_SCHEMA_VERSION!r}")
 
     streams = streams_index.get("streams")
     if not isinstance(streams, dict):
@@ -410,19 +962,53 @@ def validate_raw_real_episode(root_dir: str | Path) -> ValidationResult:
         if path is not None and isinstance(streams[stream_name], dict):
             optional_stream_paths[stream_name] = path
 
+    records_by_stream: dict[str, list[dict[str, Any]]] = {}
+
     for stream_name, path in required_stream_paths.items():
         stream_entry = streams[stream_name]
         if not isinstance(stream_entry, dict):
             continue
         if stream_name in JSONL_STREAM_NAMES:
-            _validate_jsonl_stream(path, stream_name, stream_entry, errors)
+            records_by_stream[stream_name] = _validate_jsonl_stream(
+                path,
+                stream_name,
+                stream_entry,
+                errors,
+                warnings,
+                required=True,
+            )
         elif stream_name in CAMERA_STREAM_NAMES:
-            _validate_camera_index(root, path, stream_name, errors)
+            records_by_stream[stream_name] = _validate_camera_index(
+                root,
+                path,
+                stream_name,
+                stream_entry,
+                errors,
+            )
 
     for stream_name, path in optional_stream_paths.items():
         stream_entry = streams[stream_name]
         if isinstance(stream_entry, dict) and stream_name in JSONL_STREAM_NAMES:
-            _validate_jsonl_stream(path, stream_name, stream_entry, errors)
+            records_by_stream[stream_name] = _validate_jsonl_stream(
+                path,
+                stream_name,
+                stream_entry,
+                errors,
+                warnings,
+                required=False,
+            )
+
+    _check_record_index_alignment(records_by_stream, errors, warnings)
+    errors.extend(
+        raw_real_conversion_readiness_errors(
+            metadata,
+            recorder_report,
+            streams_index,
+            streams,
+            records_by_stream,
+        )
+    )
+    _warn_timestamp_mismatches(records_by_stream, metadata, warnings)
 
     return ValidationResult(not errors, errors, warnings)
 

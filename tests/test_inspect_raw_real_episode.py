@@ -18,6 +18,15 @@ def _read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def _shift_camera_source_stamps(episode: Path, offset_sec: float) -> None:
+    for stream_name in ["external_camera", "wrist_camera"]:
+        index_path = episode / "streams" / stream_name / "index.jsonl"
+        records = _read_jsonl(index_path)
+        for record in records:
+            record["source_stamp"] = float(record["source_stamp"]) + offset_sec
+        _write_jsonl(index_path, records)
+
+
 def _write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
@@ -340,12 +349,7 @@ class InspectRawRealEpisodeTests(unittest.TestCase):
             episode = Path(tmpdir) / "episode_000000"
             make_synthetic_raw_real_episode(episode, frame_count=4)
             _mark_non_synthetic(episode)
-            for stream_name in ["external_camera", "wrist_camera"]:
-                index_path = episode / "streams" / stream_name / "index.jsonl"
-                records = _read_jsonl(index_path)
-                for record in records:
-                    record["source_stamp"] = float(record["source_stamp"]) + 999.0
-                _write_jsonl(index_path, records)
+            _shift_camera_source_stamps(episode, 999.0)
 
             report = inspect_raw_real_episode(episode)
 
@@ -353,17 +357,25 @@ class InspectRawRealEpisodeTests(unittest.TestCase):
             self.assertTrue(any("source_stamp differs from robot_state_rt" in blocker for blocker in report["conversion_blockers"]))
             self.assertTrue(any("source_stamp synchronization" in recommendation for recommendation in report["recommendations"]))
 
+    def test_camera_source_stamp_offset_above_half_frame_blocks_readiness(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4, fps=30.0)
+            _mark_non_synthetic(episode)
+            _shift_camera_source_stamps(episode, 0.05)
+
+            report = inspect_raw_real_episode(episode)
+
+            self.assertFalse(report["ready_for_conversion"])
+            self.assertTrue(any("by 0.050000s" in error for error in report["errors"]))
+            self.assertTrue(any("allowed camera/robot source_stamp offset is 0.016667s" in blocker for blocker in report["conversion_blockers"]))
+
     def test_small_camera_source_stamp_jitter_does_not_block_readiness(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = Path(tmpdir) / "episode_000000"
             make_synthetic_raw_real_episode(episode, frame_count=4, fps=30.0)
             _mark_non_synthetic(episode)
-            for stream_name in ["external_camera", "wrist_camera"]:
-                index_path = episode / "streams" / stream_name / "index.jsonl"
-                records = _read_jsonl(index_path)
-                for record in records:
-                    record["source_stamp"] = float(record["source_stamp"]) + 0.01
-                _write_jsonl(index_path, records)
+            _shift_camera_source_stamps(episode, 0.01)
 
             report = inspect_raw_real_episode(episode)
 

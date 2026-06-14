@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from doosan_forcevla_data.dummy.make_synthetic_raw_real_episode import make_synthetic_raw_real_episode
-from doosan_forcevla_data.validate.validate_raw_real_episode import validate_raw_real_episode
+from doosan_forcevla_data.validate.validate_raw_real_episode import timestamp_tolerance_seconds, validate_raw_real_episode
 
 
 def _write_json(path: Path, data: dict) -> None:
@@ -29,6 +29,22 @@ def _read_json(path: Path) -> dict:
 
 def _read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _shift_camera_source_stamps(episode: Path, offset_sec: float) -> None:
+    for stream_name in ["external_camera", "wrist_camera"]:
+        index_path = episode / "streams" / stream_name / "index.jsonl"
+        records = _read_jsonl(index_path)
+        for record in records:
+            record["source_stamp"] = float(record["source_stamp"]) + offset_sec
+        _write_jsonl(index_path, records)
+
+
+def _set_source_stamp_tolerance_override(episode: Path, value: object) -> None:
+    streams_index_path = episode / "streams" / "index.json"
+    streams_index = _read_json(streams_index_path)
+    streams_index.setdefault("timebase", {})["max_camera_robot_source_stamp_offset_sec"] = value
+    _write_json(streams_index_path, streams_index)
 
 
 def _mark_non_synthetic(episode: Path, convention: str | None = "rotation_vector_degrees") -> None:
@@ -188,6 +204,17 @@ def _read_stream_index(episode: Path) -> dict:
 
 
 class ValidateRawRealEpisodeTests(unittest.TestCase):
+    def test_timestamp_tolerance_helper_uses_half_frame_default_and_conservative_fallback(self):
+        self.assertAlmostEqual(timestamp_tolerance_seconds({"fps": 30.0}), 1.0 / 60.0)
+        self.assertAlmostEqual(timestamp_tolerance_seconds(None), 0.02)
+        self.assertAlmostEqual(
+            timestamp_tolerance_seconds(
+                {"fps": 30.0},
+                {"timebase": {"max_camera_robot_source_stamp_offset_sec": 0.055}},
+            ),
+            0.055,
+        )
+
     def test_valid_minimal_raw_real_episode_passes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = _build_valid_episode(Path(tmpdir))
@@ -567,33 +594,69 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
             episode = Path(tmpdir) / "episode_000000"
             make_synthetic_raw_real_episode(episode, frame_count=4)
             _mark_non_synthetic(episode)
-            for stream_name in ["external_camera", "wrist_camera"]:
-                index_path = episode / "streams" / stream_name / "index.jsonl"
-                records = _read_jsonl(index_path)
-                for record in records:
-                    record["source_stamp"] = float(record["source_stamp"]) + 999.0
-                _write_jsonl(index_path, records)
+            _shift_camera_source_stamps(episode, 999.0)
 
             result = validate_raw_real_episode(episode)
 
             self.assertFalse(result.ok)
             self.assertTrue(any("source_stamp differs from robot_state_rt" in error for error in result.errors))
 
+    def test_camera_source_stamp_offset_above_half_frame_fails_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4, fps=30.0)
+            _mark_non_synthetic(episode)
+            _shift_camera_source_stamps(episode, 0.05)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            message = "\n".join(result.errors)
+            self.assertIn("source_stamp differs from robot_state_rt by 0.050000s", message)
+            self.assertIn("allowed camera/robot source_stamp offset is 0.016667s", message)
+            self.assertIn("default 0.5/fps from metadata.fps=30", message)
+
     def test_small_camera_source_stamp_jitter_passes_validation(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = Path(tmpdir) / "episode_000000"
             make_synthetic_raw_real_episode(episode, frame_count=4, fps=30.0)
             _mark_non_synthetic(episode)
-            for stream_name in ["external_camera", "wrist_camera"]:
-                index_path = episode / "streams" / stream_name / "index.jsonl"
-                records = _read_jsonl(index_path)
-                for record in records:
-                    record["source_stamp"] = float(record["source_stamp"]) + 0.01
-                _write_jsonl(index_path, records)
+            _shift_camera_source_stamps(episode, 0.01)
 
             result = validate_raw_real_episode(episode)
 
             self.assertTrue(result.ok, result.errors)
+
+    def test_camera_source_stamp_tolerance_override_allows_bounded_offset(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4, fps=30.0)
+            _mark_non_synthetic(episode)
+            _set_source_stamp_tolerance_override(episode, 0.055)
+            _shift_camera_source_stamps(episode, 0.05)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertTrue(result.ok, result.errors)
+            self.assertTrue(any("max_camera_robot_source_stamp_offset_sec=0.055000s" in warning for warning in result.warnings))
+
+    def test_camera_source_stamp_tolerance_override_must_be_positive_and_bounded(self):
+        cases = [
+            (0.0, "must be a finite positive number"),
+            (0.08, "exceeds allowed maximum 0.066667s"),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for idx, (override, expected) in enumerate(cases):
+                with self.subTest(override=override):
+                    episode = Path(tmpdir) / f"episode_{idx:06d}"
+                    make_synthetic_raw_real_episode(episode, frame_count=4, fps=30.0)
+                    _mark_non_synthetic(episode)
+                    _set_source_stamp_tolerance_override(episode, override)
+
+                    result = validate_raw_real_episode(episode)
+
+                    self.assertFalse(result.ok)
+                    self.assertTrue(any(expected in error for error in result.errors))
 
 
 if __name__ == "__main__":

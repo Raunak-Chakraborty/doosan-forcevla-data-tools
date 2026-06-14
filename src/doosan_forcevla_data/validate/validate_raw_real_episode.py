@@ -44,6 +44,11 @@ CONVERTER_REQUIRED_ALIGNMENT_STREAMS = ["joint_states", "external_camera", "wris
 CONVERTER_ALIGNED_OPTIONAL_STREAMS = ["gripper_state"]
 ROTATION_VECTOR_DEGREES = "rotation_vector_degrees"
 ROTATION_VECTOR_RADIANS = "rotation_vector_radians"
+CAMERA_ROBOT_SOURCE_STAMP_TOLERANCE_FPS_FRACTION = 0.5
+CAMERA_ROBOT_SOURCE_STAMP_FALLBACK_TOLERANCE_SEC = 0.02
+CAMERA_ROBOT_SOURCE_STAMP_OVERRIDE_KEY = "max_camera_robot_source_stamp_offset_sec"
+CAMERA_ROBOT_SOURCE_STAMP_MAX_OVERRIDE_SEC = 0.1
+CAMERA_ROBOT_SOURCE_STAMP_MAX_OVERRIDE_FRAME_FRACTION = 2.0
 
 STRICT_LAB_PROVENANCE_KEYS = [
     "exact_doosan_namespace",
@@ -93,6 +98,13 @@ def _is_non_empty_string(value: Any) -> bool:
 
 def _is_finite_number(value: Any) -> bool:
     return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(float(value))
+
+
+def _positive_fps(metadata: dict[str, Any] | None) -> float | None:
+    fps = metadata.get("fps") if isinstance(metadata, dict) else None
+    if _is_finite_number(fps) and float(fps) > 0.0:
+        return float(fps)
+    return None
 
 
 def _is_non_negative_int(value: Any) -> bool:
@@ -818,24 +830,91 @@ def _records_by_index(records: list[dict[str, Any]]) -> dict[int, dict[str, Any]
     return indexed
 
 
-def timestamp_tolerance_seconds(metadata: dict[str, Any] | None) -> float:
-    if metadata is not None:
-        fps = metadata.get("fps")
-        if _is_finite_number(fps) and float(fps) > 0.0:
-            return max(0.1, 2.0 / float(fps))
-    return 0.1
+def _default_camera_robot_source_stamp_tolerance(metadata: dict[str, Any] | None) -> tuple[float, str]:
+    fps = _positive_fps(metadata)
+    if fps is None:
+        return (
+            CAMERA_ROBOT_SOURCE_STAMP_FALLBACK_TOLERANCE_SEC,
+            "default fallback because metadata.fps is missing or invalid",
+        )
+    tolerance = CAMERA_ROBOT_SOURCE_STAMP_TOLERANCE_FPS_FRACTION / fps
+    return tolerance, f"default {CAMERA_ROBOT_SOURCE_STAMP_TOLERANCE_FPS_FRACTION:g}/fps from metadata.fps={fps:g}"
+
+
+def _max_camera_robot_source_stamp_override(metadata: dict[str, Any] | None) -> tuple[float, str]:
+    fps = _positive_fps(metadata)
+    if fps is None:
+        return CAMERA_ROBOT_SOURCE_STAMP_MAX_OVERRIDE_SEC, "absolute maximum without valid metadata.fps"
+    max_by_fps = CAMERA_ROBOT_SOURCE_STAMP_MAX_OVERRIDE_FRAME_FRACTION / fps
+    return (
+        min(CAMERA_ROBOT_SOURCE_STAMP_MAX_OVERRIDE_SEC, max_by_fps),
+        f"min({CAMERA_ROBOT_SOURCE_STAMP_MAX_OVERRIDE_SEC:g}, "
+        f"{CAMERA_ROBOT_SOURCE_STAMP_MAX_OVERRIDE_FRAME_FRACTION:g}/fps) for metadata.fps={fps:g}",
+    )
+
+
+def _camera_robot_source_stamp_tolerance_policy(
+    metadata: dict[str, Any] | None,
+    streams_index: dict[str, Any] | None,
+) -> tuple[float, str, list[str], list[str]]:
+    default_tolerance, default_source = _default_camera_robot_source_stamp_tolerance(metadata)
+    if not isinstance(streams_index, dict):
+        return default_tolerance, default_source, [], []
+
+    timebase = streams_index.get("timebase")
+    if not isinstance(timebase, dict) or CAMERA_ROBOT_SOURCE_STAMP_OVERRIDE_KEY not in timebase:
+        return default_tolerance, default_source, [], []
+
+    override = timebase.get(CAMERA_ROBOT_SOURCE_STAMP_OVERRIDE_KEY)
+    override_path = f"streams/index.json timebase.{CAMERA_ROBOT_SOURCE_STAMP_OVERRIDE_KEY}"
+    if not _is_finite_number(override) or float(override) <= 0.0:
+        return (
+            default_tolerance,
+            default_source,
+            [f"{override_path} must be a finite positive number of seconds; got {override!r}"],
+            [],
+        )
+
+    max_override, max_source = _max_camera_robot_source_stamp_override(metadata)
+    override_seconds = float(override)
+    if override_seconds > max_override:
+        return (
+            default_tolerance,
+            default_source,
+            [
+                f"{override_path}={override_seconds:.6f}s exceeds allowed maximum "
+                f"{max_override:.6f}s ({max_source})"
+            ],
+            [],
+        )
+
+    warnings: list[str] = []
+    if override_seconds > default_tolerance:
+        warnings.append(
+            f"{override_path}={override_seconds:.6f}s exceeds default camera/robot source_stamp "
+            f"tolerance {default_tolerance:.6f}s ({default_source}); use only with documented clock-offset review"
+        )
+    return override_seconds, f"explicit {override_path}", [], warnings
+
+
+def timestamp_tolerance_seconds(
+    metadata: dict[str, Any] | None,
+    streams_index: dict[str, Any] | None = None,
+) -> float:
+    tolerance, _, _, _ = _camera_robot_source_stamp_tolerance_policy(metadata, streams_index)
+    return tolerance
 
 
 def _source_stamp_alignment_errors(
     records_by_stream: dict[str, list[dict[str, Any]]],
     metadata: dict[str, Any] | None,
+    streams_index: dict[str, Any] | None,
 ) -> list[str]:
+    tolerance, tolerance_source, errors, _ = _camera_robot_source_stamp_tolerance_policy(metadata, streams_index)
     robot_by_index = _records_by_index(records_by_stream.get("robot_state_rt", []))
     if not robot_by_index:
-        return []
+        return errors
 
-    errors: list[str] = []
-    tolerance = timestamp_tolerance_seconds(metadata)
     for stream_name in ["external_camera", "wrist_camera"]:
         stream_by_index = _records_by_index(records_by_stream.get(stream_name, []))
         common_indexes = sorted(set(robot_by_index) & set(stream_by_index))
@@ -844,11 +923,13 @@ def _source_stamp_alignment_errors(
             stream_stamp = _source_stamp_seconds(stream_by_index[record_index].get("source_stamp"))
             if robot_stamp is None or stream_stamp is None:
                 continue
-            if abs(stream_stamp - robot_stamp) > tolerance:
+            offset = abs(stream_stamp - robot_stamp)
+            if offset > tolerance:
                 errors.append(
-                    f"{stream_name}: source_stamp differs from robot_state_rt by more than "
-                    f"{tolerance:.3f}s at record_index {record_index}; raw_real_v0 conversion requires "
-                    "aligned episode-level record_index values"
+                    f"{stream_name}: source_stamp differs from robot_state_rt by {offset:.6f}s "
+                    f"at record_index {record_index}; allowed camera/robot source_stamp offset is "
+                    f"{tolerance:.6f}s ({tolerance_source}); raw_real_v0 conversion pairs records "
+                    "by aligned episode-level record_index values"
                 )
                 break
     return errors
@@ -863,7 +944,7 @@ def raw_real_conversion_readiness_errors(
 ) -> list[str]:
     """Return validator errors for raw_real_v0 data the converter would reject."""
 
-    errors = _source_stamp_alignment_errors(records_by_stream, metadata)
+    errors = _source_stamp_alignment_errors(records_by_stream, metadata, streams_index)
     if _is_synthetic_episode(metadata, recorder_report, streams_index):
         return errors
     if not isinstance(streams, dict):
@@ -972,12 +1053,14 @@ def raw_real_conversion_readiness_errors(
 def _warn_timestamp_mismatches(
     records_by_stream: dict[str, list[dict[str, Any]]],
     metadata: dict[str, Any] | None,
+    streams_index: dict[str, Any] | None,
     warnings: list[str],
 ) -> None:
     robot_by_index = _records_by_index(records_by_stream.get("robot_state_rt", []))
     if not robot_by_index:
         return
-    tolerance = timestamp_tolerance_seconds(metadata)
+    tolerance, tolerance_source, _, tolerance_warnings = _camera_robot_source_stamp_tolerance_policy(metadata, streams_index)
+    warnings.extend(tolerance_warnings)
 
     for stream_name in [
         "joint_states",
@@ -997,9 +1080,11 @@ def _warn_timestamp_mismatches(
                 if not _is_finite_number(robot_stamp) or not _is_finite_number(stream_stamp):
                     continue
                 if abs(float(stream_stamp) - float(robot_stamp)) > tolerance:
+                    offset = abs(float(stream_stamp) - float(robot_stamp))
                     warnings.append(
-                        f"{stream_name}: {stamp_key} differs from robot_state_rt by more than "
-                        f"{tolerance:.3f}s at record_index {record_index}"
+                        f"{stream_name}: {stamp_key} differs from robot_state_rt by {offset:.6f}s "
+                        f"at record_index {record_index}; allowed timing offset is {tolerance:.6f}s "
+                        f"({tolerance_source})"
                     )
                     break
 
@@ -1113,7 +1198,7 @@ def validate_raw_real_episode(root_dir: str | Path) -> ValidationResult:
             records_by_stream,
         )
     )
-    _warn_timestamp_mismatches(records_by_stream, metadata, warnings)
+    _warn_timestamp_mismatches(records_by_stream, metadata, streams_index, warnings)
 
     return ValidationResult(not errors, errors, warnings)
 

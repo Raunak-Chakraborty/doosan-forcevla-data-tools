@@ -128,10 +128,13 @@ def preflight_real_export(skeleton_dir: str | Path) -> dict[str, Any]:
     dependencies = check_export_dependencies()
     report["dependency_summary"] = _dependency_summary(dependencies)
     parquet_ready = _bool_dependency(dependencies, "pyarrow")
-    video_ready = _bool_dependency(dependencies, "ffmpeg") and (
-        _bool_dependency(dependencies, "imageio")
-        or _bool_dependency(dependencies, "cv2")
-        or _bool_dependency(dependencies, "PIL")
+    video_ready = _bool_dependency(dependencies, "imageio_ffmpeg") or (
+        _bool_dependency(dependencies, "ffmpeg")
+        and (
+            _bool_dependency(dependencies, "imageio")
+            or _bool_dependency(dependencies, "cv2")
+            or _bool_dependency(dependencies, "PIL")
+        )
     )
     report["parquet_ready"] = parquet_ready
     report["video_ready"] = video_ready

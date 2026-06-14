@@ -29,11 +29,10 @@ from doosan_forcevla_data.inspect.check_export_dependencies import check_export_
 from doosan_forcevla_data.validate.validate_lerobot_dataset_skeleton import validate_lerobot_dataset_skeleton
 from doosan_forcevla_data.convert.write_real_lerobot_export import (
     REPORT_NAME,
-    _dependency_available,
-    _encode_video_cv2,
-    _encode_video_imageio,
+    _encode_video_with_fallback,
     _frame_image_paths,
     _remove_file_if_present,
+    _summarize_video_backends,
     _verify_video,
 )
 
@@ -183,23 +182,22 @@ def _write_videos_episode(
     frames: list[dict[str, Any]],
     fps: float,
     dependencies: dict[str, dict[str, Any]],
-) -> list[Path]:
-    imageio_available = bool(dependencies.get("imageio", {}).get("available"))
-    cv2_available = bool(dependencies.get("cv2", {}).get("available"))
-    if not imageio_available and not cv2_available:
-        raise ValueError("video encoding requires imageio or cv2")
+) -> tuple[list[Path], dict[str, str], list[str]]:
+    if not any(_bool_dependency(dependencies, key) for key in ["imageio_ffmpeg", "imageio", "cv2"]):
+        raise ValueError("video encoding requires imageio_ffmpeg, imageio, or cv2")
 
     written: list[Path] = []
+    video_backends: dict[str, str] = {}
+    backend_errors: list[str] = []
     for key in IMAGE_KEYS:
         image_paths = _frame_image_paths(skeleton_root, frames, key)
         output_path = output_root / "videos" / key / f"episode_{episode_index:06d}.mp4"
-        if imageio_available:
-            _encode_video_imageio(image_paths, output_path, fps)
-        else:
-            _encode_video_cv2(image_paths, output_path, fps)
+        backend_name, errors = _encode_video_with_fallback(image_paths, output_path, fps, dependencies)
         _verify_video(output_path)
         written.append(output_path)
-    return written
+        video_backends[key] = backend_name
+        backend_errors.extend(f"{key}: {error}" for error in errors)
+    return written, video_backends, backend_errors
 
 
 def _adapt_info(
@@ -277,6 +275,9 @@ def _base_report(
         "lerobot_api_available": _bool_dependency(dependencies, "lerobot"),
         "parquet_written": False,
         "videos_written": False,
+        "video_backend": None,
+        "video_backends": {},
+        "video_backend_errors": [],
         "metadata_written": False,
         "per_episode": [],
         "skipped_reasons": [],
@@ -316,10 +317,13 @@ def write_real_lerobot_dataset_export(
     info, tasks, episodes, stats, frames_by_episode = _load_dataset_skeleton(skeleton_root)
     dependencies = check_export_dependencies()
     parquet_ready = _bool_dependency(dependencies, "pyarrow")
-    video_ready = _bool_dependency(dependencies, "ffmpeg") and (
-        _bool_dependency(dependencies, "imageio")
-        or _bool_dependency(dependencies, "cv2")
-        or _bool_dependency(dependencies, "PIL")
+    video_ready = _bool_dependency(dependencies, "imageio_ffmpeg") or (
+        _bool_dependency(dependencies, "ffmpeg")
+        and (
+            _bool_dependency(dependencies, "imageio")
+            or _bool_dependency(dependencies, "cv2")
+            or _bool_dependency(dependencies, "PIL")
+        )
     )
 
     report = _base_report(
@@ -359,6 +363,9 @@ def write_real_lerobot_dataset_export(
                 str(output_root / "videos" / key / f"episode_{episode_index:06d}.mp4")
                 for key in IMAGE_KEYS
             ],
+            "video_backend": None,
+            "video_backends": {},
+            "video_backend_errors": [],
             "skipped_reasons": [],
         }
 
@@ -384,23 +391,31 @@ def write_real_lerobot_dataset_export(
             for video_path in video_paths:
                 _remove_file_if_present(video_path)
             episode_report["skipped_reasons"].append(
-                "video dependencies unavailable; requires ffmpeg and imageio, cv2, or PIL readiness"
+                "video dependencies unavailable; requires imageio_ffmpeg or ffmpeg with imageio, cv2, or PIL readiness"
             )
-        elif not _dependency_available({"dependency_summary": dependencies}, "imageio") and not _dependency_available(
-            {"dependency_summary": dependencies}, "cv2"
-        ):
+        elif not any(_bool_dependency(dependencies, key) for key in ["imageio_ffmpeg", "imageio", "cv2"]):
             for video_path in video_paths:
                 _remove_file_if_present(video_path)
-            episode_report["skipped_reasons"].append("video encoding skipped: imageio and cv2 are unavailable")
+            episode_report["skipped_reasons"].append(
+                "video encoding skipped: imageio_ffmpeg, imageio, and cv2 are unavailable"
+            )
         else:
             try:
-                _write_videos_episode(
+                _, video_backends, backend_errors = _write_videos_episode(
                     skeleton_root=skeleton_root,
                     output_root=output_root,
                     episode_index=episode_index,
                     frames=frames,
                     fps=fps,
                     dependencies=dependencies,
+                )
+                episode_report["video_backends"] = video_backends
+                episode_report["video_backend"] = _summarize_video_backends(video_backends)
+                episode_report["video_backend_errors"] = backend_errors
+                for key, backend_name in video_backends.items():
+                    report["video_backends"][f"episode_{episode_index:06d}:{key}"] = backend_name
+                report["video_backend_errors"].extend(
+                    f"episode {episode_index}: {error}" for error in backend_errors
                 )
                 episode_report["videos_written"] = True
                 video_successes += 1
@@ -415,6 +430,7 @@ def write_real_lerobot_dataset_export(
 
     report["parquet_written"] = parquet_successes == expected_episodes
     report["videos_written"] = video_successes == expected_episodes
+    report["video_backend"] = _summarize_video_backends(report["video_backends"])
 
     if not report["parquet_written"] and parquet_ready:
         report["skipped_reasons"].append("one or more episode parquet files were not written")
@@ -425,7 +441,7 @@ def write_real_lerobot_dataset_export(
         report["skipped_reasons"].append("pyarrow is not available; parquet writing skipped for all episodes")
     if not video_ready:
         report["skipped_reasons"].append(
-            "video dependencies unavailable; requires ffmpeg and imageio, cv2, or PIL readiness"
+            "video dependencies unavailable; requires imageio_ffmpeg or ffmpeg with imageio, cv2, or PIL readiness"
         )
 
     adapted_info = _adapt_info(

@@ -23,6 +23,11 @@ DEPENDENCY_ORDER = [
     "ffmpeg",
 ]
 
+IMPLEMENTED_VIDEO_ENCODER_KEYS = ("imageio_ffmpeg", "imageio", "cv2")
+IMPLEMENTED_VIDEO_ENCODER_REQUIREMENT = (
+    "requires one implemented video encoder: imageio_ffmpeg, imageio, or cv2"
+)
+
 
 def _version_from_distribution(distribution_name: str) -> str | None:
     try:
@@ -120,6 +125,15 @@ def check_export_dependencies() -> dict[str, dict[str, object]]:
         "PIL": _check_importable("PIL", "Pillow"),
         "ffmpeg": _check_ffmpeg(),
     }
+
+
+def implemented_video_backend_ready(dependencies: dict[str, dict[str, object]]) -> bool:
+    """Return whether at least one implemented video encoder is available."""
+
+    return any(
+        isinstance(dependencies.get(key), dict) and dependencies[key].get("available") is True
+        for key in IMPLEMENTED_VIDEO_ENCODER_KEYS
+    )
 
 
 def _format_version(version: object) -> str:

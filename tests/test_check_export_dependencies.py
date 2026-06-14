@@ -2,7 +2,10 @@ import unittest
 from unittest import mock
 
 import doosan_forcevla_data.inspect.check_export_dependencies as dependencies_module
-from doosan_forcevla_data.inspect.check_export_dependencies import check_export_dependencies
+from doosan_forcevla_data.inspect.check_export_dependencies import (
+    check_export_dependencies,
+    implemented_video_backend_ready,
+)
 
 
 class CheckExportDependenciesTests(unittest.TestCase):
@@ -50,6 +53,23 @@ class CheckExportDependenciesTests(unittest.TestCase):
         self.assertTrue(results["imageio_ffmpeg"]["available"])
         self.assertEqual(results["imageio_ffmpeg"]["version"], "9.9.9")
         self.assertIn("/bundled/ffmpeg", results["imageio_ffmpeg"]["detail"])
+
+    def test_video_backend_ready_ignores_pil_plus_ffmpeg_without_encoder(self):
+        dependencies = {
+            "imageio_ffmpeg": {"available": False},
+            "imageio": {"available": False},
+            "cv2": {"available": False},
+            "PIL": {"available": True},
+            "ffmpeg": {"available": True},
+        }
+
+        self.assertFalse(implemented_video_backend_ready(dependencies))
+
+        for key in ["imageio_ffmpeg", "imageio", "cv2"]:
+            with self.subTest(key=key):
+                backend_dependencies = dict(dependencies)
+                backend_dependencies[key] = {"available": True}
+                self.assertTrue(implemented_video_backend_ready(backend_dependencies))
 
 
 if __name__ == "__main__":

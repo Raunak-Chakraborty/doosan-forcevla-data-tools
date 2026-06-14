@@ -220,6 +220,42 @@ class WriteRealLeRobotExportTests(unittest.TestCase):
                 reasons = " ".join(str(reason) for reason in report["skipped_reasons"])
                 self.assertRegex(reasons, "video|imageio|cv2|encoding")
 
+    def test_write_if_available_video_skip_mentions_only_implemented_encoders(self):
+        dependencies = {
+            "imageio_ffmpeg": {"available": False, "version": None, "detail": "missing"},
+            "imageio": {"available": False, "version": None, "detail": "missing"},
+            "cv2": {"available": False, "version": None, "detail": "missing"},
+            "PIL": {"available": True, "version": "10", "detail": "pillow"},
+            "ffmpeg": {"available": True, "version": None, "detail": "system ffmpeg"},
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            skeleton = self._build_skeleton(root, "forcevla_13d", "symlink")
+            output = root / "real_lerobot" / "forcevla_13d" / "doosan_peg_in_hole_v0"
+            preflight = {
+                "profile": "forcevla_13d",
+                "total_frames": 19,
+                "state_dim": 13,
+                "action_dim": 7,
+                "dependency_summary": dependencies,
+                "parquet_ready": False,
+                "video_ready": False,
+                "lerobot_api_available": False,
+            }
+
+            with mock.patch.object(real_export_module, "preflight_real_export", return_value=preflight):
+                report_path = write_real_lerobot_export(skeleton, output, mode="write-if-available")
+
+            report = self._read_report(report_path)
+
+        reasons = " ".join(str(reason) for reason in report["skipped_reasons"])
+        self.assertFalse(report["video_ready"])
+        self.assertFalse(report["videos_written"])
+        self.assertIn("requires one implemented video encoder: imageio_ffmpeg, imageio, or cv2", reasons)
+        self.assertNotIn("PIL readiness", reasons)
+        self.assertNotIn("ffmpeg with imageio", reasons)
+
     def test_doosan_full_25d_dry_run_reports_profile_dimensions(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

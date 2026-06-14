@@ -25,7 +25,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-from doosan_forcevla_data.inspect.check_export_dependencies import check_export_dependencies
+from doosan_forcevla_data.inspect.check_export_dependencies import (
+    IMPLEMENTED_VIDEO_ENCODER_REQUIREMENT,
+    check_export_dependencies,
+    implemented_video_backend_ready,
+)
 from doosan_forcevla_data.validate.validate_lerobot_dataset_skeleton import validate_lerobot_dataset_skeleton
 from doosan_forcevla_data.convert.write_real_lerobot_export import (
     REPORT_NAME,
@@ -317,14 +321,7 @@ def write_real_lerobot_dataset_export(
     info, tasks, episodes, stats, frames_by_episode = _load_dataset_skeleton(skeleton_root)
     dependencies = check_export_dependencies()
     parquet_ready = _bool_dependency(dependencies, "pyarrow")
-    video_ready = _bool_dependency(dependencies, "imageio_ffmpeg") or (
-        _bool_dependency(dependencies, "ffmpeg")
-        and (
-            _bool_dependency(dependencies, "imageio")
-            or _bool_dependency(dependencies, "cv2")
-            or _bool_dependency(dependencies, "PIL")
-        )
-    )
+    video_ready = implemented_video_backend_ready(dependencies)
 
     report = _base_report(
         skeleton_root=skeleton_root,
@@ -391,7 +388,7 @@ def write_real_lerobot_dataset_export(
             for video_path in video_paths:
                 _remove_file_if_present(video_path)
             episode_report["skipped_reasons"].append(
-                "video dependencies unavailable; requires imageio_ffmpeg or ffmpeg with imageio, cv2, or PIL readiness"
+                f"video dependencies unavailable; {IMPLEMENTED_VIDEO_ENCODER_REQUIREMENT}"
             )
         elif not any(_bool_dependency(dependencies, key) for key in ["imageio_ffmpeg", "imageio", "cv2"]):
             for video_path in video_paths:
@@ -441,7 +438,7 @@ def write_real_lerobot_dataset_export(
         report["skipped_reasons"].append("pyarrow is not available; parquet writing skipped for all episodes")
     if not video_ready:
         report["skipped_reasons"].append(
-            "video dependencies unavailable; requires imageio_ffmpeg or ffmpeg with imageio, cv2, or PIL readiness"
+            f"video dependencies unavailable; {IMPLEMENTED_VIDEO_ENCODER_REQUIREMENT}"
         )
 
     adapted_info = _adapt_info(

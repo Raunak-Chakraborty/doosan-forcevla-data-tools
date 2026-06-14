@@ -106,6 +106,32 @@ class PreflightRealExportTests(unittest.TestCase):
         self.assertTrue(report["dependency_summary"]["imageio_ffmpeg"]["available"])
         self.assertTrue(report["video_ready"])
 
+    def test_preflight_does_not_treat_pil_plus_ffmpeg_as_video_ready_without_encoder(self):
+        dependencies = {
+            "python": {"available": True, "version": "3", "detail": "python"},
+            "pyarrow": {"available": False, "version": None, "detail": "missing"},
+            "pandas": {"available": False, "version": None, "detail": "missing"},
+            "lerobot": {"available": False, "version": None, "detail": "missing"},
+            "cv2": {"available": False, "version": None, "detail": "missing"},
+            "imageio": {"available": False, "version": None, "detail": "missing"},
+            "imageio_ffmpeg": {"available": False, "version": None, "detail": "missing"},
+            "PIL": {"available": True, "version": "10", "detail": "pillow"},
+            "ffmpeg": {"available": True, "version": None, "detail": "system ffmpeg"},
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = self._build_skeleton(Path(tmpdir), "forcevla_13d", "copy")
+            with mock.patch.object(preflight_module, "check_export_dependencies", return_value=dependencies):
+                report = preflight_real_export(output)
+
+        self.assertTrue(report["dependency_summary"]["PIL"]["available"])
+        self.assertTrue(report["dependency_summary"]["ffmpeg"]["available"])
+        self.assertFalse(report["dependency_summary"]["imageio_ffmpeg"]["available"])
+        self.assertFalse(report["dependency_summary"]["imageio"]["available"])
+        self.assertFalse(report["dependency_summary"]["cv2"]["available"])
+        self.assertFalse(report["video_ready"])
+        self.assertFalse(report["video_export_ready"])
+
     def test_prompt_task_mismatch_is_reported_without_crashing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             output = self._build_skeleton(Path(tmpdir), "forcevla_13d", "copy")

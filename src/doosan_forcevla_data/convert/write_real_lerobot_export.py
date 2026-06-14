@@ -12,6 +12,10 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from doosan_forcevla_data.inspect.check_export_dependencies import (
+    IMPLEMENTED_VIDEO_ENCODER_REQUIREMENT,
+    implemented_video_backend_ready,
+)
 from doosan_forcevla_data.inspect.preflight_real_export import preflight_real_export
 from doosan_forcevla_data.schema.processed_schema import ACTION_DIM
 from doosan_forcevla_data.validate.validate_lerobot_skeleton import validate_lerobot_skeleton
@@ -339,7 +343,7 @@ def _write_videos(
     fps: float,
     dependencies: dict[str, dict[str, Any]],
 ) -> tuple[list[Path], dict[str, str], list[str]]:
-    if not any(_dependency_flag(dependencies, key) for key in ["imageio_ffmpeg", "imageio", "cv2"]):
+    if not implemented_video_backend_ready(dependencies):
         raise ValueError("video encoding requires imageio_ffmpeg, imageio, or cv2")
 
     written: list[Path] = []
@@ -446,7 +450,7 @@ def write_real_lerobot_export(
         for video_path in video_paths:
             _remove_file_if_present(video_path)
         report["skipped_reasons"].append(
-            "video dependencies unavailable; requires imageio_ffmpeg or ffmpeg with imageio, cv2, or PIL readiness"
+            f"video dependencies unavailable; {IMPLEMENTED_VIDEO_ENCODER_REQUIREMENT}"
         )
     elif not any(_dependency_available(preflight, key) for key in ["imageio_ffmpeg", "imageio", "cv2"]):
         for video_path in video_paths:

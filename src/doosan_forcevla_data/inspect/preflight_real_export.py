@@ -7,7 +7,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-from doosan_forcevla_data.inspect.check_export_dependencies import check_export_dependencies
+from doosan_forcevla_data.inspect.check_export_dependencies import (
+    check_export_dependencies,
+    implemented_video_backend_ready,
+)
 from doosan_forcevla_data.schema.processed_schema import ACTION_DIM, MODEL_STATE_DIM
 from doosan_forcevla_data.validate.validate_lerobot_skeleton import validate_lerobot_skeleton
 
@@ -128,14 +131,7 @@ def preflight_real_export(skeleton_dir: str | Path) -> dict[str, Any]:
     dependencies = check_export_dependencies()
     report["dependency_summary"] = _dependency_summary(dependencies)
     parquet_ready = _bool_dependency(dependencies, "pyarrow")
-    video_ready = _bool_dependency(dependencies, "imageio_ffmpeg") or (
-        _bool_dependency(dependencies, "ffmpeg")
-        and (
-            _bool_dependency(dependencies, "imageio")
-            or _bool_dependency(dependencies, "cv2")
-            or _bool_dependency(dependencies, "PIL")
-        )
-    )
+    video_ready = implemented_video_backend_ready(dependencies)
     report["parquet_ready"] = parquet_ready
     report["video_ready"] = video_ready
     report["lerobot_api_available"] = _bool_dependency(dependencies, "lerobot")

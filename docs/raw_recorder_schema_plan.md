@@ -238,7 +238,7 @@ Required TCP pose fields:
 | Field | Requirement |
 | --- | --- |
 | `position` | TCP translation in raw units plus normalized target units. Doosan RT pose comments indicate millimeters; processed state should use meters. |
-| `orientation` | Raw representation as recorded plus normalized representation for conversion. Doosan RT comments indicate `[x, y, z, a, b, c]` with Euler angles in degrees, likely ZYZ per static report; processed path expects `xyzw` quaternion before rotation-vector conversion. |
+| `orientation` | Raw representation as recorded plus normalized representation for conversion. Doosan RT comments indicate `[x, y, z, a, b, c]` with Euler angles in degrees, likely ZYZ per static report; processed path expects `xyzw` quaternion before rotation-vector conversion. Do not label native Doosan Euler values as `rotation_vector_degrees` unless live verification proves that convention and a converter path supports it. |
 | `pose_frame` | Base/world/user coordinate frame for the TCP pose. |
 | `tcp_frame` | Active TCP/tool frame identifier. |
 | `source_name` | Exact `ReadDataRt`, `GetCurrentPosx`, or TF source. |
@@ -374,7 +374,7 @@ Offline computation requirements:
 | --- | --- |
 | Use measured TCP poses | Prefer `RobotStateRt.actual_tcp_position` or verified `GetCurrentPosx`/TF-derived measured TCP pose. |
 | Normalize units first | Convert raw Doosan TCP translations from millimeters to meters before computing deltas if the raw source uses millimeters. Convert raw degrees to radians before quaternion/rotation-vector calculations. |
-| Resolve orientation convention | The ROS report says Doosan task pose comments indicate `[x, y, z, a, b, c]`, mm/deg, likely Euler ZYZ. This must be verified before conversion to `xyzw` quaternion. |
+| Resolve orientation convention | The ROS report says Doosan task pose comments indicate `[x, y, z, a, b, c]`, mm/deg, likely Euler ZYZ. This must be verified before conversion to `xyzw` quaternion. Until then, use a blocking marker such as `doosan_posx_euler_zyz_degrees`, not `rotation_vector_degrees`. |
 | Choose frame explicitly | TCP deltas should be computed in the selected base/world/task frame consistently. Do not mix base, user, flange, or tool frames. |
 | Handle quaternion sign | Quaternions `q` and `-q` are equivalent; shortest-rotation handling should remain in the conversion path. |
 | Align frame pairs | Current `raw_real_v0` conversion uses the shared episode-level `record_index` as the aligned frame key. It does not timestamp-resample or interpolate streams. |
@@ -667,7 +667,12 @@ raw_candidates:
     converter_supported_tcp_orientation_conventions:
       - rotation_vector_degrees
       - rotation_vector_radians
+    recognized_but_unsupported_tcp_orientation_conventions:
+      - doosan_posx_euler_zyz_degrees
+      - doosan_robotstate_actual_tcp_position_euler_zyz_degrees
+      - euler_zyz_degrees
     current_converter_rejects_unknown_euler_conventions: true
+    notes: Do not label native Doosan Euler pose values as rotation vectors unless live verification proves that convention and a converter path supports it.
     joint_position_units: degrees
     joint_velocity_units: degrees_per_second
     force_units: N

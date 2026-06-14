@@ -529,6 +529,58 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
 
             self.assertTrue(result.ok, result.errors)
 
+    def test_non_synthetic_rotation_vector_radians_passes_orientation_requirement(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode, convention="rotation_vector_radians")
+            robot_path = episode / "streams" / "robot_state_rt.jsonl"
+            robot_records = _read_jsonl(robot_path)
+            for record in robot_records:
+                record["units"]["tcp_orientation"] = "rad"
+            _write_jsonl(robot_path, robot_records)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertTrue(result.ok, result.errors)
+
+    def test_non_synthetic_doosan_euler_conventions_fail_with_explicit_message(self):
+        conventions = [
+            "doosan_posx_euler_zyz_degrees",
+            "doosan_robotstate_actual_tcp_position_euler_zyz_degrees",
+            "euler_zyz_degrees",
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for idx, convention in enumerate(conventions):
+                with self.subTest(convention=convention):
+                    episode = Path(tmpdir) / f"episode_{idx:06d}"
+                    make_synthetic_raw_real_episode(episode, frame_count=4)
+                    _mark_non_synthetic(episode, convention=convention)
+
+                    result = validate_raw_real_episode(episode)
+
+                    self.assertFalse(result.ok)
+                    self.assertTrue(any(convention in error for error in result.errors))
+                    self.assertTrue(any("recognized but unsupported for conversion" in error for error in result.errors))
+                    self.assertTrue(any("Doosan native Euler ZYZ" in error for error in result.errors))
+
+    def test_non_synthetic_unknown_orientation_convention_lists_supported_and_unsupported(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode, convention="quaternion_xyzw")
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            message = "\n".join(result.errors)
+            self.assertIn("unknown tcp_orientation_convention 'quaternion_xyzw'", message)
+            self.assertIn("supported conversion conventions", message)
+            self.assertIn("rotation_vector_degrees", message)
+            self.assertIn("rotation_vector_radians", message)
+            self.assertIn("recognized but unsupported Doosan/native conventions", message)
+            self.assertIn("doosan_posx_euler_zyz_degrees", message)
+
     def test_non_synthetic_verified_boolean_without_convention_fails_validation(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = Path(tmpdir) / "episode_000000"

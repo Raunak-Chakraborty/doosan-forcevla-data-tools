@@ -21,13 +21,16 @@ from doosan_forcevla_data.schema.processed_schema import (
     QUATERNION_CONVENTION,
 )
 from doosan_forcevla_data.validate.validate_processed_episode import validate_processed_episode
-from doosan_forcevla_data.validate.validate_raw_real_episode import validate_raw_real_episode
+from doosan_forcevla_data.validate.validate_raw_real_episode import (
+    ROTATION_VECTOR_DEGREES,
+    ROTATION_VECTOR_RADIANS,
+    tcp_orientation_convention_readiness_error,
+    validate_raw_real_episode,
+)
 
 
 DATASET_NAME = "doosan_peg_in_hole_v0"
 CONVERTER_VERSION = "raw_real_to_processed_v0"
-ROTATION_VECTOR_DEGREES = "rotation_vector_degrees"
-ROTATION_VECTOR_RADIANS = "rotation_vector_radians"
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
@@ -300,11 +303,10 @@ def _orientation_policy(
     if convention == ROTATION_VECTOR_RADIANS:
         return False, "tcp_orientation_convention=rotation_vector_radians", "rad"
 
-    raise ValueError(
-        "non-synthetic raw-real episode requires explicit supported TCP orientation convention; "
-        "set tcp_orientation_convention='rotation_vector_degrees' or "
-        "tcp_orientation_convention='rotation_vector_radians' only after lab verification"
-    )
+    error = tcp_orientation_convention_readiness_error(convention)
+    if error is None:
+        error = f"tcp_orientation_convention {convention!r} is not implemented by this converter"
+    raise ValueError(error)
 
 
 def _select_joint_vectors(

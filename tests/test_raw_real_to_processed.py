@@ -325,6 +325,41 @@ class RawRealToProcessedTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "tcp_orientation_convention"):
                 convert_raw_real_to_processed(raw_episode, processed_episode)
 
+    def test_non_synthetic_doosan_euler_convention_fails_before_output_creation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode, convention="doosan_posx_euler_zyz_degrees")
+
+            with self.assertRaises(ValueError) as context:
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            message = str(context.exception)
+            self.assertIn("recognized but unsupported for conversion", message)
+            self.assertIn("Doosan native Euler ZYZ", message)
+            self.assertNotIn("produced invalid quaternion", message)
+            self.assertFalse(processed_episode.exists())
+
+    def test_non_synthetic_doosan_euler_convention_preserves_existing_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            sentinel = processed_episode / "sentinel.txt"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode, convention="euler_zyz_degrees")
+            processed_episode.mkdir(parents=True)
+            sentinel.write_text("keep\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "recognized but unsupported"):
+                convert_raw_real_to_processed(raw_episode, processed_episode, overwrite=True)
+
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
+
     def test_non_synthetic_missing_robot_units_is_blocked_before_conversion(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

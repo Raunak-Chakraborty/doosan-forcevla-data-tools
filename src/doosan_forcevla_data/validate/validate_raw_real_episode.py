@@ -216,7 +216,10 @@ def _strict_lab_provenance_errors(
     records_by_stream: dict[str, list[dict[str, Any]]],
 ) -> list[str]:
     if not _strict_lab_provenance_required(metadata, recorder_report):
-        return []
+        return [
+            "non-synthetic raw-real conversion requires strict lab provenance; "
+            "set lab_provenance_required=true or strict_lab_provenance=true and provide verified lab provenance"
+        ]
 
     errors: list[str] = []
     metadata_dict = metadata if isinstance(metadata, dict) else {}

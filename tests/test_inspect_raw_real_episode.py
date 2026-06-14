@@ -28,11 +28,16 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
             handle.write(json.dumps(record, separators=(",", ":")) + "\n")
 
 
-def _mark_non_synthetic(episode: Path, convention: str | None = "rotation_vector_degrees") -> None:
+def _mark_non_synthetic(
+    episode: Path,
+    convention: str | None = "rotation_vector_degrees",
+    collection_method: str = "passive_real_recorder",
+    recorder_version: str = "passive_real_recorder_v0",
+) -> None:
     metadata_path = episode / "metadata.json"
     metadata = _read_json(metadata_path)
-    metadata["collection_method"] = "passive_real_recorder"
-    metadata["recorder_version"] = "passive_real_recorder_v0"
+    metadata["collection_method"] = collection_method
+    metadata["recorder_version"] = recorder_version
     metadata["source_workspace"] = {"path": "lab/offline", "verified": True}
     metadata.pop("tcp_orientation_convention_verified", None)
     if convention is None:
@@ -314,6 +319,23 @@ class InspectRawRealEpisodeTests(unittest.TestCase):
             report = inspect_raw_real_episode(episode)
 
             self.assertFalse(report["ready_for_conversion"])
+            self.assertTrue(any("tcp_orientation_convention" in error for error in report["errors"]))
+
+    def test_substring_synthetic_collection_method_is_not_ready_without_real_metadata(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(
+                episode,
+                convention=None,
+                collection_method="non_synthetic_lab_capture",
+            )
+
+            report = inspect_raw_real_episode(episode)
+
+            self.assertFalse(report["ready_for_conversion"])
+            self.assertFalse(report["robot_state_summary"]["orientation_convention_ready"])
+            self.assertTrue(any("TCP orientation convention" in blocker for blocker in report["conversion_blockers"]))
             self.assertTrue(any("tcp_orientation_convention" in error for error in report["errors"]))
 
     def test_joint_states_fallback_can_make_non_synthetic_episode_ready(self):

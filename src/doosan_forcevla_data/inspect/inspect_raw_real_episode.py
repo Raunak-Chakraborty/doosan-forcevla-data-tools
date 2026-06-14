@@ -21,6 +21,7 @@ from doosan_forcevla_data.schema.raw_real_schema import (
 from doosan_forcevla_data.validate.validate_raw_real_episode import (
     ROTATION_VECTOR_DEGREES,
     ROTATION_VECTOR_RADIANS,
+    is_explicit_synthetic_episode,
     raw_real_conversion_readiness_errors,
     validate_raw_real_episode,
 )
@@ -420,29 +421,12 @@ def _tcp_position_units_guess(records: list[dict[str, Any]], entry: dict[str, An
     return "unknown"
 
 
-def _is_synthetic_episode(
-    metadata: dict[str, Any] | None,
-    recorder_report: dict[str, Any] | None,
-    streams_index: dict[str, Any] | None,
-) -> bool:
-    collection_method = metadata.get("collection_method") if isinstance(metadata, dict) else None
-    recorder_version = metadata.get("recorder_version") if isinstance(metadata, dict) else None
-    return any(
-        [
-            isinstance(collection_method, str) and "synthetic" in collection_method.lower(),
-            isinstance(recorder_version, str) and "synthetic" in recorder_version.lower(),
-            isinstance(recorder_report, dict) and recorder_report.get("synthetic") is True,
-            isinstance(streams_index, dict) and streams_index.get("synthetic") is True,
-        ]
-    )
-
-
 def _orientation_guard(
     metadata: dict[str, Any] | None,
     recorder_report: dict[str, Any] | None,
     streams_index: dict[str, Any] | None,
 ) -> tuple[str, bool]:
-    if _is_synthetic_episode(metadata, recorder_report, streams_index):
+    if is_explicit_synthetic_episode(metadata, recorder_report, streams_index):
         return "synthetic episode: converter uses guarded synthetic rotation-vector-degrees policy", True
     metadata = metadata if isinstance(metadata, dict) else {}
     recorder_report = recorder_report if isinstance(recorder_report, dict) else {}

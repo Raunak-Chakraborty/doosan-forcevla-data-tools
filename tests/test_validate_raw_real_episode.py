@@ -31,11 +31,16 @@ def _read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def _mark_non_synthetic(episode: Path, convention: str | None = "rotation_vector_degrees") -> None:
+def _mark_non_synthetic(
+    episode: Path,
+    convention: str | None = "rotation_vector_degrees",
+    collection_method: str = "passive_real_recorder",
+    recorder_version: str = "passive_real_recorder_v0",
+) -> None:
     metadata_path = episode / "metadata.json"
     metadata = _read_json(metadata_path)
-    metadata["collection_method"] = "passive_real_recorder"
-    metadata["recorder_version"] = "passive_real_recorder_v0"
+    metadata["collection_method"] = collection_method
+    metadata["recorder_version"] = recorder_version
     metadata["source_workspace"] = {"path": "lab/offline", "verified": True}
     metadata.pop("tcp_orientation_convention_verified", None)
     if convention is None:
@@ -543,6 +548,29 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
 
             self.assertFalse(result.ok)
             self.assertTrue(any("tcp_orientation_convention must be one of" in error for error in result.errors))
+
+    def test_substring_synthetic_names_do_not_bypass_non_synthetic_validation(self):
+        cases = [
+            ("non_synthetic_lab_capture", "passive_real_recorder_v0"),
+            ("real_non_synthetic_test", "passive_real_recorder_v0"),
+            ("passive_real_recorder", "non_synthetic_v1"),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for case_idx, (collection_method, recorder_version) in enumerate(cases):
+                with self.subTest(collection_method=collection_method, recorder_version=recorder_version):
+                    episode = Path(tmpdir) / f"episode_{case_idx:06d}"
+                    make_synthetic_raw_real_episode(episode, frame_count=4)
+                    _mark_non_synthetic(
+                        episode,
+                        convention=None,
+                        collection_method=collection_method,
+                        recorder_version=recorder_version,
+                    )
+
+                    result = validate_raw_real_episode(episode)
+
+                    self.assertFalse(result.ok)
+                    self.assertTrue(any("tcp_orientation_convention must be one of" in error for error in result.errors))
 
     def test_joint_states_fallback_allows_missing_robot_state_joint_vectors(self):
         with tempfile.TemporaryDirectory() as tmpdir:

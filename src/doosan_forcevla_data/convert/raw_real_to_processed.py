@@ -21,7 +21,10 @@ from doosan_forcevla_data.schema.processed_schema import (
     QUATERNION_CONVENTION,
 )
 from doosan_forcevla_data.validate.validate_processed_episode import validate_processed_episode
-from doosan_forcevla_data.validate.validate_raw_real_episode import validate_raw_real_episode
+from doosan_forcevla_data.validate.validate_raw_real_episode import (
+    is_explicit_synthetic_episode,
+    validate_raw_real_episode,
+)
 
 
 DATASET_NAME = "doosan_peg_in_hole_v0"
@@ -269,29 +272,12 @@ def _rotvec_to_quat_xyzw(rotvec: list[float]) -> list[float]:
     return [component / norm for component in quat]
 
 
-def _is_synthetic_episode(
-    metadata: dict[str, Any],
-    recorder_report: dict[str, Any],
-    streams_index: dict[str, Any],
-) -> bool:
-    collection_method = metadata.get("collection_method")
-    recorder_version = metadata.get("recorder_version")
-    return any(
-        [
-            isinstance(collection_method, str) and "synthetic" in collection_method.lower(),
-            isinstance(recorder_version, str) and "synthetic" in recorder_version.lower(),
-            recorder_report.get("synthetic") is True,
-            streams_index.get("synthetic") is True,
-        ]
-    )
-
-
 def _orientation_policy(
     metadata: dict[str, Any],
     recorder_report: dict[str, Any],
     streams_index: dict[str, Any],
 ) -> tuple[bool, str, str | None]:
-    if _is_synthetic_episode(metadata, recorder_report, streams_index):
+    if is_explicit_synthetic_episode(metadata, recorder_report, streams_index):
         return True, "synthetic raw-real episode: treating actual_tcp_position[3:6] as rotation vector in degrees", "deg"
 
     convention = metadata.get("tcp_orientation_convention") or recorder_report.get("tcp_orientation_convention")

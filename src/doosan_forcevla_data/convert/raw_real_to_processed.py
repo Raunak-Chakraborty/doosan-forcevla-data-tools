@@ -541,6 +541,8 @@ def convert_raw_real_to_processed(
     ordered_indexes = sorted(primary_indexes)
     if ordered_indexes != list(range(len(ordered_indexes))):
         raise ValueError("robot_state_rt record_index values must be contiguous from 0 for processed frame_index mapping")
+    if len(ordered_indexes) < 2:
+        raise ValueError(f"raw-real conversion requires at least 2 aligned records; got {len(ordered_indexes)}")
     ordered_robot_records = [robot_by_index[index] for index in ordered_indexes]
     timestamps = _relative_timestamps(ordered_robot_records)
 

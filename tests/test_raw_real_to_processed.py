@@ -33,7 +33,32 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
             handle.write(json.dumps(record, separators=(",", ":")) + "\n")
 
 
-def _mark_non_synthetic(episode: Path, convention: str | None = "rotation_vector_degrees") -> None:
+def _valid_wrench_sources_metadata() -> dict:
+    return {
+        "external_tcp_force": {
+            "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+            "force_unit": "N",
+            "torque_unit": "Nm",
+            "frame": "base",
+            "compensation": "estimated_external_tcp_force",
+            "approved_for_model_state": True,
+        },
+        "raw_force_torque": {
+            "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+            "force_unit": "N",
+            "torque_unit": "Nm",
+            "frame": "flange",
+            "compensation": "raw_flange_sensor",
+            "approved_for_model_state": False,
+        },
+    }
+
+
+def _mark_non_synthetic(
+    episode: Path,
+    convention: str | None = "rotation_vector_degrees",
+    include_wrench_metadata: bool = True,
+) -> None:
     metadata_path = episode / "metadata.json"
     metadata = _read_json(metadata_path)
     metadata["collection_method"] = "passive_real_recorder"
@@ -57,6 +82,11 @@ def _mark_non_synthetic(episode: Path, convention: str | None = "rotation_vector
     streams_index_path = episode / "streams" / "index.json"
     streams_index = _read_json(streams_index_path)
     streams_index["synthetic"] = False
+    robot_entry = streams_index["streams"]["robot_state_rt"]
+    if include_wrench_metadata:
+        robot_entry["wrench_sources"] = _valid_wrench_sources_metadata()
+    else:
+        robot_entry.pop("wrench_sources", None)
     _write_json(streams_index_path, streams_index)
 
 
@@ -325,6 +355,37 @@ class RawRealToProcessedTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "tcp_orientation_convention"):
                 convert_raw_real_to_processed(raw_episode, processed_episode)
 
+    def test_non_synthetic_selected_wrench_missing_metadata_fails_before_writing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode, include_wrench_metadata=False)
+
+            with self.assertRaisesRegex(ValueError, "wrench metadata"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            self.assertFalse(processed_episode.exists())
+
+    def test_non_synthetic_selected_wrench_missing_metadata_preserves_existing_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            sentinel = processed_episode / "sentinel.txt"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode, include_wrench_metadata=False)
+            processed_episode.mkdir(parents=True)
+            sentinel.write_text("keep\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "wrench metadata"):
+                convert_raw_real_to_processed(raw_episode, processed_episode, overwrite=True)
+
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
+
     def test_non_synthetic_missing_robot_units_is_blocked_before_conversion(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -368,6 +429,26 @@ class RawRealToProcessedTests(unittest.TestCase):
             convert_raw_real_to_processed(raw_episode, processed_episode)
 
             self.assertTrue(validate_processed_episode(processed_episode).ok)
+
+    def test_non_synthetic_conversion_records_wrench_metadata_and_preserves_order(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode, convention="rotation_vector_degrees")
+
+            convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            metadata = _read_json(processed_episode / "metadata_processed.json")
+            self.assertEqual(metadata["wrench_source"], ["external_tcp_force"])
+            self.assertEqual(
+                metadata["wrench_source_metadata"],
+                {"external_tcp_force": _valid_wrench_sources_metadata()["external_tcp_force"]},
+            )
+            first_raw_robot_record = _read_jsonl(raw_episode / "streams" / "robot_state_rt.jsonl")[0]
+            first_processed_frame = _read_jsonl(processed_episode / "frames.jsonl")[0]
+            self.assertEqual(first_processed_frame["model_state"][7:13], first_raw_robot_record["external_tcp_force"])
 
     def test_joint_states_fallback_converts_when_robot_joint_vectors_absent(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -31,7 +31,32 @@ def _read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def _mark_non_synthetic(episode: Path, convention: str | None = "rotation_vector_degrees") -> None:
+def _valid_wrench_sources_metadata() -> dict:
+    return {
+        "external_tcp_force": {
+            "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+            "force_unit": "N",
+            "torque_unit": "Nm",
+            "frame": "base",
+            "compensation": "estimated_external_tcp_force",
+            "approved_for_model_state": True,
+        },
+        "raw_force_torque": {
+            "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+            "force_unit": "N",
+            "torque_unit": "Nm",
+            "frame": "flange",
+            "compensation": "raw_flange_sensor",
+            "approved_for_model_state": False,
+        },
+    }
+
+
+def _mark_non_synthetic(
+    episode: Path,
+    convention: str | None = "rotation_vector_degrees",
+    include_wrench_metadata: bool = True,
+) -> None:
     metadata_path = episode / "metadata.json"
     metadata = _read_json(metadata_path)
     metadata["collection_method"] = "passive_real_recorder"
@@ -55,7 +80,19 @@ def _mark_non_synthetic(episode: Path, convention: str | None = "rotation_vector
     streams_index_path = episode / "streams" / "index.json"
     streams_index = _read_json(streams_index_path)
     streams_index["synthetic"] = False
+    robot_entry = streams_index["streams"]["robot_state_rt"]
+    if include_wrench_metadata:
+        robot_entry["wrench_sources"] = _valid_wrench_sources_metadata()
+    else:
+        robot_entry.pop("wrench_sources", None)
     _write_json(streams_index_path, streams_index)
+
+
+def _set_external_wrench_metadata_field(episode: Path, key: str, value) -> None:
+    index_path = episode / "streams" / "index.json"
+    index = _read_json(index_path)
+    index["streams"]["robot_state_rt"]["wrench_sources"]["external_tcp_force"][key] = value
+    _write_json(index_path, index)
 
 
 def _stamp(index: int, receipt: float | None = None, monotonic: float | None = None) -> dict:
@@ -528,6 +565,28 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
             result = validate_raw_real_episode(episode)
 
             self.assertTrue(result.ok, result.errors)
+
+    def test_non_synthetic_invalid_selected_wrench_metadata_fails_validation(self):
+        cases = [
+            ("force_unit", "lbf", "force_unit"),
+            ("torque_unit", "lbf_ft", "torque_unit"),
+            ("frame", "unknown", "frame"),
+            ("order", ["Fx", "Fy", "Fz", "Tz", "Ty", "Tx"], "order"),
+            ("approved_for_model_state", False, "approved_for_model_state"),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for key, value, expected_message in cases:
+                with self.subTest(key=key):
+                    episode = Path(tmpdir) / f"episode_{key}"
+                    make_synthetic_raw_real_episode(episode, frame_count=4)
+                    _mark_non_synthetic(episode)
+                    _set_external_wrench_metadata_field(episode, key, value)
+
+                    result = validate_raw_real_episode(episode)
+
+                    self.assertFalse(result.ok)
+                    self.assertTrue(any("wrench metadata" in error for error in result.errors))
+                    self.assertTrue(any(expected_message in error for error in result.errors))
 
     def test_non_synthetic_verified_boolean_without_convention_fails_validation(self):
         with tempfile.TemporaryDirectory() as tmpdir:

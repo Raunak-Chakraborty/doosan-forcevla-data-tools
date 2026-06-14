@@ -44,6 +44,16 @@ CONVERTER_REQUIRED_ALIGNMENT_STREAMS = ["joint_states", "external_camera", "wris
 CONVERTER_ALIGNED_OPTIONAL_STREAMS = ["gripper_state"]
 ROTATION_VECTOR_DEGREES = "rotation_vector_degrees"
 ROTATION_VECTOR_RADIANS = "rotation_vector_radians"
+WRENCH_MODEL_STATE_ORDER = ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"]
+WRENCH_FORCE_UNIT = "N"
+WRENCH_TORQUE_UNIT = "Nm"
+SUPPORTED_WRENCH_FRAMES = {"base", "flange"}
+SUPPORTED_WRENCH_COMPENSATION = {
+    "estimated_external_tcp_force",
+    "raw_flange_sensor",
+    "gravity_compensated",
+    "not_gravity_compensated",
+}
 
 STRICT_LAB_PROVENANCE_KEYS = [
     "exact_doosan_namespace",
@@ -256,6 +266,131 @@ def _strict_lab_provenance_errors(
                 errors.append(f"strict lab provenance: {stream_name} camera record {idx} frame_id must be known")
                 break
 
+    return errors
+
+
+def _selected_wrench_source(record: dict[str, Any]) -> str | None:
+    if _is_numeric_list(record.get("external_tcp_force"), 6):
+        return "external_tcp_force"
+    if _is_numeric_list(record.get("raw_force_torque"), 6):
+        return "raw_force_torque"
+    return None
+
+
+def selected_wrench_sources_for_model_state(records_by_stream: dict[str, list[dict[str, Any]]]) -> list[str]:
+    selected: list[str] = []
+    seen: set[str] = set()
+    for record in records_by_stream.get("robot_state_rt", []):
+        source = _selected_wrench_source(record)
+        if source is not None and source not in seen:
+            selected.append(source)
+            seen.add(source)
+    return selected
+
+
+def _robot_state_wrench_sources_metadata(streams: dict[str, Any] | None) -> Any:
+    if not isinstance(streams, dict):
+        return None
+    robot_entry = streams.get("robot_state_rt")
+    if not isinstance(robot_entry, dict):
+        return None
+    return robot_entry.get("wrench_sources")
+
+
+def _validated_wrench_metadata(source: str, metadata: dict[str, Any], errors: list[str]) -> dict[str, Any] | None:
+    valid = True
+    context = f"wrench metadata: selected source {source}"
+
+    order = metadata.get("order")
+    if order != WRENCH_MODEL_STATE_ORDER:
+        errors.append(f"{context} order must be {WRENCH_MODEL_STATE_ORDER!r}; got {order!r}")
+        valid = False
+
+    force_unit = metadata.get("force_unit")
+    if force_unit != WRENCH_FORCE_UNIT:
+        errors.append(f"{context} force_unit must be 'N'; got {force_unit!r}")
+        valid = False
+
+    torque_unit = metadata.get("torque_unit")
+    if torque_unit != WRENCH_TORQUE_UNIT:
+        errors.append(f"{context} torque_unit must be 'Nm'; got {torque_unit!r}")
+        valid = False
+
+    frame = metadata.get("frame")
+    if frame not in SUPPORTED_WRENCH_FRAMES:
+        errors.append(f"{context} frame must be one of {sorted(SUPPORTED_WRENCH_FRAMES)!r}; got {frame!r}")
+        valid = False
+
+    compensation = metadata.get("compensation")
+    if compensation not in SUPPORTED_WRENCH_COMPENSATION:
+        errors.append(
+            f"{context} compensation must be one of {sorted(SUPPORTED_WRENCH_COMPENSATION)!r}; "
+            f"got {compensation!r}"
+        )
+        valid = False
+
+    approved = metadata.get("approved_for_model_state")
+    if approved is not True:
+        errors.append(f"{context} approved_for_model_state must be true; got {approved!r}")
+        valid = False
+
+    if not valid:
+        return None
+    return {
+        "order": list(WRENCH_MODEL_STATE_ORDER),
+        "force_unit": force_unit,
+        "torque_unit": torque_unit,
+        "frame": frame,
+        "compensation": compensation,
+        "approved_for_model_state": True,
+    }
+
+
+def selected_wrench_metadata_for_model_state(
+    streams: dict[str, Any] | None,
+    records_by_stream: dict[str, list[dict[str, Any]]],
+) -> dict[str, dict[str, Any]]:
+    selected_sources = selected_wrench_sources_for_model_state(records_by_stream)
+    wrench_sources = _robot_state_wrench_sources_metadata(streams)
+    if not isinstance(wrench_sources, dict):
+        return {}
+
+    selected_metadata: dict[str, dict[str, Any]] = {}
+    for source in selected_sources:
+        metadata = wrench_sources.get(source)
+        errors: list[str] = []
+        if isinstance(metadata, dict):
+            validated = _validated_wrench_metadata(source, metadata, errors)
+            if validated is not None:
+                selected_metadata[source] = validated
+    return selected_metadata
+
+
+def _wrench_metadata_errors(
+    streams: dict[str, Any] | None,
+    records_by_stream: dict[str, list[dict[str, Any]]],
+) -> list[str]:
+    selected_sources = selected_wrench_sources_for_model_state(records_by_stream)
+    if not selected_sources:
+        return []
+
+    errors: list[str] = []
+    wrench_sources = _robot_state_wrench_sources_metadata(streams)
+    if not isinstance(wrench_sources, dict):
+        return [
+            "wrench metadata: streams/index.json streams.robot_state_rt.wrench_sources "
+            "must be a JSON object for non-synthetic conversion"
+        ]
+
+    for source in selected_sources:
+        metadata = wrench_sources.get(source)
+        if not isinstance(metadata, dict):
+            errors.append(
+                f"wrench metadata: selected source {source} must have metadata at "
+                f"streams/index.json streams.robot_state_rt.wrench_sources.{source}"
+            )
+            continue
+        _validated_wrench_metadata(source, metadata, errors)
     return errors
 
 
@@ -878,6 +1013,7 @@ def raw_real_conversion_readiness_errors(
         )
 
     errors.extend(_strict_lab_provenance_errors(metadata, recorder_report, streams, records_by_stream))
+    errors.extend(_wrench_metadata_errors(streams, records_by_stream))
 
     robot_entry = streams.get("robot_state_rt") if isinstance(streams.get("robot_state_rt"), dict) else {}
     joint_entry = streams.get("joint_states") if isinstance(streams.get("joint_states"), dict) else {}

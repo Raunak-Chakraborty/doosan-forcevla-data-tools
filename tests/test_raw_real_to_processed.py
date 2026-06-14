@@ -33,7 +33,11 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
             handle.write(json.dumps(record, separators=(",", ":")) + "\n")
 
 
-def _mark_non_synthetic(episode: Path, convention: str | None = "rotation_vector_degrees") -> None:
+def _mark_non_synthetic(
+    episode: Path,
+    convention: str | None = "rotation_vector_degrees",
+    source_stamp_unit: str | None = "seconds",
+) -> None:
     metadata_path = episode / "metadata.json"
     metadata = _read_json(metadata_path)
     metadata["collection_method"] = "passive_real_recorder"
@@ -57,6 +61,10 @@ def _mark_non_synthetic(episode: Path, convention: str | None = "rotation_vector
     streams_index_path = episode / "streams" / "index.json"
     streams_index = _read_json(streams_index_path)
     streams_index["synthetic"] = False
+    if source_stamp_unit is None:
+        streams_index.pop("timebase", None)
+    else:
+        streams_index["timebase"] = {"source_stamp_unit": source_stamp_unit}
     _write_json(streams_index_path, streams_index)
 
 
@@ -324,6 +332,37 @@ class RawRealToProcessedTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "tcp_orientation_convention"):
                 convert_raw_real_to_processed(raw_episode, processed_episode)
+
+    def test_non_synthetic_numeric_source_stamp_without_timebase_fails_before_writing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode, source_stamp_unit=None)
+
+            with self.assertRaisesRegex(ValueError, "source_stamp unit/timebase"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            self.assertFalse(processed_episode.exists())
+
+    def test_non_synthetic_numeric_source_stamp_without_timebase_preserves_existing_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            sentinel = processed_episode / "sentinel.txt"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode, source_stamp_unit=None)
+            processed_episode.mkdir(parents=True)
+            sentinel.write_text("keep\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "source_stamp unit/timebase"):
+                convert_raw_real_to_processed(raw_episode, processed_episode, overwrite=True)
+
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
 
     def test_non_synthetic_missing_robot_units_is_blocked_before_conversion(self):
         with tempfile.TemporaryDirectory() as tmpdir:

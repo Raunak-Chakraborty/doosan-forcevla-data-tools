@@ -31,7 +31,11 @@ def _read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def _mark_non_synthetic(episode: Path, convention: str | None = "rotation_vector_degrees") -> None:
+def _mark_non_synthetic(
+    episode: Path,
+    convention: str | None = "rotation_vector_degrees",
+    source_stamp_unit: str | None = "seconds",
+) -> None:
     metadata_path = episode / "metadata.json"
     metadata = _read_json(metadata_path)
     metadata["collection_method"] = "passive_real_recorder"
@@ -55,6 +59,10 @@ def _mark_non_synthetic(episode: Path, convention: str | None = "rotation_vector
     streams_index_path = episode / "streams" / "index.json"
     streams_index = _read_json(streams_index_path)
     streams_index["synthetic"] = False
+    if source_stamp_unit is None:
+        streams_index.pop("timebase", None)
+    else:
+        streams_index["timebase"] = {"source_stamp_unit": source_stamp_unit}
     _write_json(streams_index_path, streams_index)
 
 
@@ -528,6 +536,18 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
             result = validate_raw_real_episode(episode)
 
             self.assertTrue(result.ok, result.errors)
+
+    def test_non_synthetic_unsupported_source_stamp_unit_fails_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode, source_stamp_unit="nanoseconds")
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("source_stamp unit/timebase" in error for error in result.errors))
+            self.assertTrue(any("timebase.source_stamp_unit" in error for error in result.errors))
 
     def test_non_synthetic_verified_boolean_without_convention_fails_validation(self):
         with tempfile.TemporaryDirectory() as tmpdir:

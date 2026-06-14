@@ -44,6 +44,7 @@ CONVERTER_REQUIRED_ALIGNMENT_STREAMS = ["joint_states", "external_camera", "wris
 CONVERTER_ALIGNED_OPTIONAL_STREAMS = ["gripper_state"]
 ROTATION_VECTOR_DEGREES = "rotation_vector_degrees"
 ROTATION_VECTOR_RADIANS = "rotation_vector_radians"
+SOURCE_STAMP_SECONDS_UNIT = "seconds"
 
 STRICT_LAB_PROVENANCE_KEYS = [
     "exact_doosan_namespace",
@@ -352,6 +353,31 @@ def _source_stamp_seconds(value: Any) -> float | None:
     if not 0.0 <= float(nanosec) < 1_000_000_000.0:
         return None
     return float(sec) + float(nanosec) * 1e-9
+
+
+def _required_streams_use_numeric_source_stamp(records_by_stream: dict[str, list[dict[str, Any]]]) -> bool:
+    for stream_name in REQUIRED_STREAM_NAMES:
+        for record in records_by_stream.get(stream_name, []):
+            if _is_finite_number(record.get("source_stamp")):
+                return True
+    return False
+
+
+def _numeric_source_stamp_timebase_errors(
+    streams_index: dict[str, Any] | None,
+    records_by_stream: dict[str, list[dict[str, Any]]],
+) -> list[str]:
+    if not _required_streams_use_numeric_source_stamp(records_by_stream):
+        return []
+
+    timebase = streams_index.get("timebase") if isinstance(streams_index, dict) else None
+    source_stamp_unit = timebase.get("source_stamp_unit") if isinstance(timebase, dict) else None
+    if source_stamp_unit == SOURCE_STAMP_SECONDS_UNIT:
+        return []
+    return [
+        "source_stamp unit/timebase: streams/index.json timebase.source_stamp_unit must be "
+        f"'seconds' for non-synthetic numeric source_stamp values; got {source_stamp_unit!r}"
+    ]
 
 
 def _validate_common_record_fields(
@@ -868,6 +894,8 @@ def raw_real_conversion_readiness_errors(
         return errors
     if not isinstance(streams, dict):
         return errors
+
+    errors.extend(_numeric_source_stamp_timebase_errors(streams_index, records_by_stream))
 
     convention = _tcp_orientation_convention(metadata, recorder_report)
     if convention not in {ROTATION_VECTOR_DEGREES, ROTATION_VECTOR_RADIANS}:

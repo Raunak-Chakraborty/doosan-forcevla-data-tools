@@ -28,7 +28,11 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
             handle.write(json.dumps(record, separators=(",", ":")) + "\n")
 
 
-def _mark_non_synthetic(episode: Path, convention: str | None = "rotation_vector_degrees") -> None:
+def _mark_non_synthetic(
+    episode: Path,
+    convention: str | None = "rotation_vector_degrees",
+    source_stamp_unit: str | None = "seconds",
+) -> None:
     metadata_path = episode / "metadata.json"
     metadata = _read_json(metadata_path)
     metadata["collection_method"] = "passive_real_recorder"
@@ -52,6 +56,10 @@ def _mark_non_synthetic(episode: Path, convention: str | None = "rotation_vector
     streams_index_path = episode / "streams" / "index.json"
     streams_index = _read_json(streams_index_path)
     streams_index["synthetic"] = False
+    if source_stamp_unit is None:
+        streams_index.pop("timebase", None)
+    else:
+        streams_index["timebase"] = {"source_stamp_unit": source_stamp_unit}
     _write_json(streams_index_path, streams_index)
 
 
@@ -300,6 +308,20 @@ class InspectRawRealEpisodeTests(unittest.TestCase):
             self.assertTrue(report["validation"]["ok"], report["validation"]["errors"])
             self.assertTrue(report["ready_for_conversion"], report["errors"])
             self.assertEqual(report["conversion_readiness_errors"], [])
+
+    def test_non_synthetic_numeric_source_stamp_without_timebase_blocks_readiness(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode, source_stamp_unit=None)
+
+            report = inspect_raw_real_episode(episode)
+
+            self.assertFalse(report["ready_for_conversion"])
+            self.assertTrue(
+                any("source_stamp" in blocker and "timebase" in blocker for blocker in report["conversion_blockers"])
+            )
+            self.assertTrue(any("source_stamp" in error and "timebase" in error for error in report["errors"]))
 
     def test_non_synthetic_verified_boolean_without_convention_blocks_readiness(self):
         with tempfile.TemporaryDirectory() as tmpdir:

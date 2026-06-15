@@ -85,6 +85,15 @@ SUPPORTED_JOINT_VELOCITY_UNITS = {
 }
 DEGREE_UNITS = {"deg", "degree", "degrees"}
 RADIAN_UNITS = {"rad", "radian", "radians"}
+CALIBRATION_REF_ID_KEYS = ("id", "calibration_id", "reference_id", "ref", "reference", "name")
+REQUIRED_CALIBRATION_REF_PATHS = [
+    ("camera_intrinsics.external_camera", ("camera_intrinsics", "external_camera")),
+    ("camera_extrinsics.external_camera", ("camera_extrinsics", "external_camera")),
+    ("camera_intrinsics.wrist_camera", ("camera_intrinsics", "wrist_camera")),
+    ("camera_extrinsics.wrist_camera", ("camera_extrinsics", "wrist_camera")),
+    ("tcp_tool_calibration", ("tcp_tool_calibration",)),
+    ("force_torque_calibration", ("force_torque_calibration",)),
+]
 
 
 def _is_non_empty_string(value: Any) -> bool:
@@ -256,6 +265,108 @@ def _strict_lab_provenance_errors(
                 errors.append(f"strict lab provenance: {stream_name} camera record {idx} frame_id must be known")
                 break
 
+    return errors
+
+
+def _declared_image_shape_text(record: dict[str, Any]) -> str:
+    return f"{record.get('width')!r}x{record.get('height')!r}x{record.get('channels')!r}"
+
+
+def _decoded_image_shape_text(shape: tuple[int, int, int]) -> str:
+    width, height, channels = shape
+    return f"{width}x{height}x{channels}"
+
+
+def _decode_image_shape(path: Path) -> tuple[int, int, int] | str:
+    try:
+        from PIL import Image
+    except ImportError:
+        return "Pillow/PIL is not available; install Pillow to verify non-synthetic camera images"
+
+    try:
+        with Image.open(path) as image:
+            image.load()
+            width, height = image.size
+            channels = len(image.getbands())
+    except Exception as exc:  # Pillow raises several decoder-specific exception types.
+        return f"Pillow/PIL could not decode image: {exc}"
+
+    return int(width), int(height), int(channels)
+
+
+def _camera_image_decodability_errors(root: Path, records_by_stream: dict[str, list[dict[str, Any]]]) -> list[str]:
+    errors: list[str] = []
+    for stream_name in sorted(CAMERA_STREAM_NAMES):
+        for idx, record in enumerate(records_by_stream.get(stream_name, [])):
+            image_path_value = record.get("image_path")
+            if not isinstance(image_path_value, str) or not image_path_value:
+                continue
+            image_relative = Path(image_path_value)
+            if image_relative.is_absolute() or ".." in image_relative.parts:
+                continue
+            image_path = root / image_relative
+            if not _is_path_under_root(root, image_path) or not image_path.is_file():
+                continue
+            try:
+                if image_path.stat().st_size <= 0:
+                    continue
+            except OSError:
+                continue
+
+            declared_shape = _declared_image_shape_text(record)
+            decoded = _decode_image_shape(image_path)
+            if isinstance(decoded, str):
+                errors.append(
+                    f"{stream_name} camera record {idx}: image_path {image_path_value} is not decodable "
+                    f"for non-synthetic conversion (declared {declared_shape}; resolved {image_path}): {decoded}"
+                )
+                continue
+
+            if not all(_is_positive_int(record.get(key)) for key in ["width", "height", "channels"]):
+                continue
+            expected = (int(record["width"]), int(record["height"]), int(record["channels"]))
+            if decoded != expected:
+                errors.append(
+                    f"{stream_name} camera record {idx}: decoded image dimensions do not match declared metadata "
+                    f"for image_path {image_path_value}: declared {declared_shape}, "
+                    f"decoded {_decoded_image_shape_text(decoded)} (resolved {image_path})"
+                )
+    return errors
+
+
+def _nested_value(data: dict[str, Any], path: tuple[str, ...]) -> tuple[bool, Any]:
+    current: Any = data
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            return False, None
+        current = current[key]
+    return True, current
+
+
+def _is_meaningful_calibration_ref(value: Any) -> bool:
+    if isinstance(value, str):
+        return not _is_unknown_provenance_value(value)
+    if isinstance(value, dict):
+        if not value:
+            return False
+        return any(_is_meaningful_calibration_ref(value.get(key)) for key in CALIBRATION_REF_ID_KEYS if key in value)
+    return False
+
+
+def _calibration_refs_readiness_errors(calibration_refs: dict[str, Any] | None) -> list[str]:
+    if not isinstance(calibration_refs, dict):
+        return ["calibration_refs: must be a JSON object for non-synthetic conversion"]
+
+    errors: list[str] = []
+    for display_path, path in REQUIRED_CALIBRATION_REF_PATHS:
+        exists, value = _nested_value(calibration_refs, path)
+        if not exists:
+            errors.append(f"calibration_refs.{display_path} is required for non-synthetic conversion")
+        elif not _is_meaningful_calibration_ref(value):
+            errors.append(
+                f"calibration_refs.{display_path} must be a non-empty known calibration reference "
+                "for non-synthetic conversion"
+            )
     return errors
 
 
@@ -860,12 +971,23 @@ def raw_real_conversion_readiness_errors(
     streams_index: dict[str, Any] | None,
     streams: dict[str, Any] | None,
     records_by_stream: dict[str, list[dict[str, Any]]],
+    *,
+    root_dir: str | Path | None = None,
+    calibration_refs: dict[str, Any] | None = None,
 ) -> list[str]:
     """Return validator errors for raw_real_v0 data the converter would reject."""
 
     errors = _source_stamp_alignment_errors(records_by_stream, metadata)
     if _is_synthetic_episode(metadata, recorder_report, streams_index):
         return errors
+
+    if root_dir is None:
+        errors.append("raw-real episode root is required to verify non-synthetic camera image decodability")
+    else:
+        errors.extend(_camera_image_decodability_errors(Path(root_dir), records_by_stream))
+
+    errors.extend(_calibration_refs_readiness_errors(calibration_refs))
+
     if not isinstance(streams, dict):
         return errors
 
@@ -1030,7 +1152,7 @@ def validate_raw_real_episode(root_dir: str | Path) -> ValidationResult:
     if metadata is not None:
         _check_metadata(metadata, metadata_path, errors)
 
-    _read_json_object(root / "calibration_refs.json", errors, "calibration_refs")
+    calibration_refs = _read_json_object(root / "calibration_refs.json", errors, "calibration_refs")
     recorder_report = _read_json_object(root / "recorder_report.json", errors, "recorder_report")
     events = _read_jsonl_objects(root / "events.jsonl", errors, "events")
     _validate_events(events, root / "events.jsonl", metadata, errors, warnings)
@@ -1111,6 +1233,8 @@ def validate_raw_real_episode(root_dir: str | Path) -> ValidationResult:
             streams_index,
             streams,
             records_by_stream,
+            root_dir=root,
+            calibration_refs=calibration_refs,
         )
     )
     _warn_timestamp_mismatches(records_by_stream, metadata, warnings)

@@ -352,6 +352,76 @@ class RawRealToProcessedTests(unittest.TestCase):
                 convert_raw_real_to_processed(raw_episode, processed_episode)
             self.assertFalse(processed_episode.exists())
 
+    def test_non_synthetic_corrupt_camera_image_fails_before_output_creation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode)
+            (raw_episode / "streams" / "external_camera" / "frames" / "000000.ppm").write_bytes(b"not an image")
+
+            with self.assertRaisesRegex(ValueError, "not decodable"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            self.assertFalse(processed_episode.exists())
+
+    def test_non_synthetic_corrupt_camera_image_preserves_existing_output_with_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode)
+            (raw_episode / "streams" / "external_camera" / "frames" / "000000.ppm").write_bytes(b"not an image")
+            processed_episode.mkdir(parents=True)
+            sentinel = processed_episode / "sentinel.txt"
+            sentinel.write_text("keep\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "not decodable"):
+                convert_raw_real_to_processed(raw_episode, processed_episode, overwrite=True)
+
+            self.assertTrue(sentinel.is_file())
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
+
+    def test_non_synthetic_missing_calibration_ref_fails_before_output_creation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode)
+            calibration_path = raw_episode / "calibration_refs.json"
+            calibration_refs = _read_json(calibration_path)
+            del calibration_refs["force_torque_calibration"]
+            _write_json(calibration_path, calibration_refs)
+
+            with self.assertRaisesRegex(ValueError, "calibration_refs.force_torque_calibration is required"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            self.assertFalse(processed_episode.exists())
+
+    def test_non_synthetic_missing_calibration_ref_preserves_existing_output_with_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode)
+            calibration_path = raw_episode / "calibration_refs.json"
+            calibration_refs = _read_json(calibration_path)
+            del calibration_refs["force_torque_calibration"]
+            _write_json(calibration_path, calibration_refs)
+            processed_episode.mkdir(parents=True)
+            sentinel = processed_episode / "sentinel.txt"
+            sentinel.write_text("keep\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "calibration_refs.force_torque_calibration is required"):
+                convert_raw_real_to_processed(raw_episode, processed_episode, overwrite=True)
+
+            self.assertTrue(sentinel.is_file())
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
+
     def test_non_synthetic_valid_explicit_units_and_convention_convert(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

@@ -270,6 +270,24 @@ class InspectRawRealEpisodeTests(unittest.TestCase):
             self.assertTrue(any("tcp_position unit" in error for error in report["errors"]))
             self.assertTrue(any("tcp_position unit" in blocker for blocker in report["conversion_blockers"]))
 
+    def test_non_synthetic_missing_gripper_state_blocks_readiness(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4, include_optional_streams=False)
+            _mark_non_synthetic(episode)
+
+            report = inspect_raw_real_episode(episode)
+
+            self.assertFalse(report["ready_for_conversion"])
+            self.assertFalse(report["validation"]["ok"])
+            self.assertTrue(
+                any(
+                    "gripper_state is required for non-synthetic conversion" in blocker
+                    and "gripper_pos=0.0" in blocker
+                    for blocker in report["conversion_blockers"]
+                )
+            )
+
     def test_non_synthetic_unsupported_tcp_units_block_readiness(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             cases = [("tcp_position", "inch"), ("tcp_orientation", "turns")]
@@ -292,7 +310,7 @@ class InspectRawRealEpisodeTests(unittest.TestCase):
     def test_non_synthetic_explicit_units_and_convention_are_ready(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = Path(tmpdir) / "episode_000000"
-            make_synthetic_raw_real_episode(episode, frame_count=4)
+            make_synthetic_raw_real_episode(episode, frame_count=4, include_optional_streams=True)
             _mark_non_synthetic(episode, convention="rotation_vector_degrees")
 
             report = inspect_raw_real_episode(episode)
@@ -319,7 +337,7 @@ class InspectRawRealEpisodeTests(unittest.TestCase):
     def test_joint_states_fallback_can_make_non_synthetic_episode_ready(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = Path(tmpdir) / "episode_000000"
-            make_synthetic_raw_real_episode(episode, frame_count=4)
+            make_synthetic_raw_real_episode(episode, frame_count=4, include_optional_streams=True)
             _mark_non_synthetic(episode)
             robot_path = episode / "streams" / "robot_state_rt.jsonl"
             robot_records = _read_jsonl(robot_path)
@@ -356,7 +374,7 @@ class InspectRawRealEpisodeTests(unittest.TestCase):
     def test_small_camera_source_stamp_jitter_does_not_block_readiness(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = Path(tmpdir) / "episode_000000"
-            make_synthetic_raw_real_episode(episode, frame_count=4, fps=30.0)
+            make_synthetic_raw_real_episode(episode, frame_count=4, fps=30.0, include_optional_streams=True)
             _mark_non_synthetic(episode)
             for stream_name in ["external_camera", "wrist_camera"]:
                 index_path = episode / "streams" / stream_name / "index.jsonl"

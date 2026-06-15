@@ -818,6 +818,10 @@ def _records_by_index(records: list[dict[str, Any]]) -> dict[int, dict[str, Any]
     return indexed
 
 
+def _has_finite_gripper_value(record: dict[str, Any]) -> bool:
+    return _is_finite_number(record.get("gripper_position")) or _is_finite_number(record.get("gripper_width_m"))
+
+
 def timestamp_tolerance_seconds(metadata: dict[str, Any] | None) -> float:
     if metadata is not None:
         fps = metadata.get("fps")
@@ -854,6 +858,38 @@ def _source_stamp_alignment_errors(
     return errors
 
 
+def _gripper_state_readiness_errors(records_by_stream: dict[str, list[dict[str, Any]]]) -> list[str]:
+    robot_indexes = _record_index_set(records_by_stream.get("robot_state_rt", []))
+    if not robot_indexes:
+        return []
+
+    gripper_records = records_by_stream.get("gripper_state", [])
+    if not gripper_records:
+        return [
+            "gripper_state is required for non-synthetic conversion; missing gripper state would otherwise "
+            "be silently zero-filled as gripper_pos=0.0"
+        ]
+
+    errors: list[str] = []
+    gripper_by_index = _records_by_index(gripper_records)
+    gripper_indexes = set(gripper_by_index)
+    if gripper_indexes != robot_indexes:
+        errors.append(
+            "gripper_state must contain one aligned record for every robot_state_rt record_index for "
+            f"non-synthetic conversion; {_alignment_details(robot_indexes, gripper_indexes)}; "
+            "silent gripper_pos=0.0 fallback is not allowed"
+        )
+
+    for record_index in sorted(robot_indexes & gripper_indexes):
+        if not _has_finite_gripper_value(gripper_by_index[record_index]):
+            errors.append(
+                f"gripper_state record_index {record_index}: non-synthetic conversion requires finite "
+                "gripper_position or gripper_width_m; silent gripper_pos=0.0 fallback is not allowed"
+            )
+
+    return errors
+
+
 def raw_real_conversion_readiness_errors(
     metadata: dict[str, Any] | None,
     recorder_report: dict[str, Any] | None,
@@ -868,6 +904,8 @@ def raw_real_conversion_readiness_errors(
         return errors
     if not isinstance(streams, dict):
         return errors
+
+    errors.extend(_gripper_state_readiness_errors(records_by_stream))
 
     convention = _tcp_orientation_convention(metadata, recorder_report)
     if convention not in {ROTATION_VECTOR_DEGREES, ROTATION_VECTOR_RADIANS}:

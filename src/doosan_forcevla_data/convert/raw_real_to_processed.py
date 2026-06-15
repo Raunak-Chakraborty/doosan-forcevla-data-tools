@@ -375,6 +375,36 @@ def _select_gripper(gripper_record: dict[str, Any] | None, frame_index: int) -> 
     )
 
 
+def _has_gripper_value(record: dict[str, Any]) -> bool:
+    return _is_finite_number(record.get("gripper_position")) or _is_finite_number(record.get("gripper_width_m"))
+
+
+def _require_non_synthetic_gripper_state(
+    primary_indexes: set[int],
+    gripper_by_index: dict[int, dict[str, Any]],
+) -> None:
+    if set(gripper_by_index) != primary_indexes:
+        missing = sorted(primary_indexes - set(gripper_by_index))
+        extra = sorted(set(gripper_by_index) - primary_indexes)
+        details: list[str] = []
+        if missing:
+            details.append(f"missing robot_state_rt record_index values {missing[:10]}")
+        if extra:
+            details.append(f"extra record_index values {extra[:10]}")
+        detail_text = "; ".join(details) if details else "index sets differ"
+        raise ValueError(
+            "non-synthetic raw-real conversion requires aligned gripper_state records; "
+            f"{detail_text}; refusing silent gripper_pos=0.0 fallback"
+        )
+
+    for record_index in sorted(primary_indexes):
+        if not _has_gripper_value(gripper_by_index[record_index]):
+            raise ValueError(
+                f"gripper_state record_index {record_index}: non-synthetic raw-real conversion requires finite "
+                "gripper_position or gripper_width_m; refusing silent gripper_pos=0.0 fallback"
+            )
+
+
 def _resolve_raw_image(raw_root: Path, image_path_value: Any, frame_index: int, stream_name: str) -> Path:
     if not isinstance(image_path_value, str) or not image_path_value:
         raise ValueError(f"{stream_name} record {frame_index}: image_path must be a non-empty string")
@@ -544,6 +574,9 @@ def convert_raw_real_to_processed(
     ordered_robot_records = [robot_by_index[index] for index in ordered_indexes]
     timestamps = _relative_timestamps(ordered_robot_records)
 
+    if not synthetic:
+        _require_non_synthetic_gripper_state(primary_indexes, gripper_by_index)
+
     _prepare_output(raw_root, output_root, overwrite=overwrite)
 
     robot_entry = _stream_entry(streams, "robot_state_rt")
@@ -642,7 +675,11 @@ def convert_raw_real_to_processed(
             "joint_states": "record_index aligned fallback only when robot_state_rt joint vectors are unavailable",
             "external_rgb_path": "external_camera.image_path",
             "tcp_rgb_path": "wrist_camera.image_path",
-            "gripper_state": "record_index aligned optional stream" if gripper_by_index else "absent; gripper_pos=0.0",
+            "gripper_state": (
+                "record_index aligned measured gripper_state stream"
+                if gripper_by_index
+                else "synthetic-only fallback; gripper_pos=0.0"
+            ),
         },
         "unit_conversions": {
             "tcp_position": "raw units to meters",

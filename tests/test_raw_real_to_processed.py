@@ -352,12 +352,42 @@ class RawRealToProcessedTests(unittest.TestCase):
                 convert_raw_real_to_processed(raw_episode, processed_episode)
             self.assertFalse(processed_episode.exists())
 
+    def test_non_synthetic_missing_gripper_state_fails_before_output_creation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4, include_optional_streams=False)
+            _mark_non_synthetic(raw_episode)
+
+            with self.assertRaisesRegex(ValueError, "gripper_state is required for non-synthetic conversion"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            self.assertFalse(processed_episode.exists())
+
+    def test_non_synthetic_missing_gripper_state_preserves_existing_output_with_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4, include_optional_streams=False)
+            _mark_non_synthetic(raw_episode)
+            processed_episode.mkdir(parents=True)
+            sentinel = processed_episode / "sentinel.txt"
+            sentinel.write_text("keep\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "gripper_state is required for non-synthetic conversion"):
+                convert_raw_real_to_processed(raw_episode, processed_episode, overwrite=True)
+
+            self.assertTrue(sentinel.is_file())
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
+
     def test_non_synthetic_valid_explicit_units_and_convention_convert(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             raw_episode = root / "raw_real" / "episode_000000"
             processed_episode = root / "processed" / "episode_000000"
-            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4, include_optional_streams=True)
             _mark_non_synthetic(raw_episode, convention="rotation_vector_degrees")
 
             validation = validate_raw_real_episode(raw_episode)
@@ -369,12 +399,36 @@ class RawRealToProcessedTests(unittest.TestCase):
 
             self.assertTrue(validate_processed_episode(processed_episode).ok)
 
+    def test_non_synthetic_valid_gripper_records_are_used_instead_of_zero_fallback(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4, include_optional_streams=True)
+            _mark_non_synthetic(raw_episode, convention="rotation_vector_degrees")
+            gripper_path = raw_episode / "streams" / "gripper_state.jsonl"
+            gripper_records = _read_jsonl(gripper_path)
+            for idx, record in enumerate(gripper_records):
+                record["gripper_position"] = 0.20 + 0.01 * idx
+                record.pop("gripper_width_m", None)
+            _write_jsonl(gripper_path, gripper_records)
+
+            convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            frames = _read_jsonl(processed_episode / "frames.jsonl")
+            metadata = _read_json(processed_episode / "metadata_processed.json")
+            self.assertEqual(metadata["selected_streams"]["gripper_state"], "record_index aligned measured gripper_state stream")
+            for idx, frame in enumerate(frames):
+                self.assertAlmostEqual(frame["model_state"][6], 0.20 + 0.01 * idx)
+            for frame in frames[:-1]:
+                self.assertAlmostEqual(frame["measured_action"][6], 0.01)
+
     def test_joint_states_fallback_converts_when_robot_joint_vectors_absent(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             raw_episode = root / "raw_real" / "episode_000000"
             processed_episode = root / "processed" / "episode_000000"
-            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4, include_optional_streams=True)
             _mark_non_synthetic(raw_episode, convention="rotation_vector_degrees")
 
             robot_path = raw_episode / "streams" / "robot_state_rt.jsonl"

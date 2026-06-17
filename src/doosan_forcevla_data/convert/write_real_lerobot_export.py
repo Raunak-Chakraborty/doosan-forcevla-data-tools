@@ -5,10 +5,17 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import math
 import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
+from doosan_forcevla_data.inspect.check_export_dependencies import (
+    IMPLEMENTED_VIDEO_ENCODER_REQUIREMENT,
+    implemented_video_backend_ready,
+)
 from doosan_forcevla_data.inspect.preflight_real_export import preflight_real_export
 from doosan_forcevla_data.schema.processed_schema import ACTION_DIM
 from doosan_forcevla_data.validate.validate_lerobot_skeleton import validate_lerobot_skeleton
@@ -164,6 +171,90 @@ def _frame_image_paths(skeleton_root: Path, frames: list[dict[str, Any]], key: s
     return paths
 
 
+def _format_fps(fps: float) -> str:
+    value = float(fps)
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"fps must be a positive finite number, got {fps!r}")
+    return format(value, ".12g")
+
+
+def _dependency_flag(dependencies: dict[str, dict[str, Any]], key: str) -> bool:
+    return bool(dependencies.get(key, {}).get("available"))
+
+
+def _encode_video_imageio_ffmpeg(image_paths: list[Path], output_path: Path, fps: float) -> None:
+    if not image_paths:
+        raise ValueError("video encoding requires at least one image")
+
+    imageio_ffmpeg = importlib.import_module("imageio_ffmpeg")
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    if not ffmpeg_exe:
+        raise ValueError("imageio_ffmpeg.get_ffmpeg_exe() returned an empty path")
+
+    suffix = image_paths[0].suffix.lower()
+    if not suffix:
+        raise ValueError("direct imageio_ffmpeg encoding requires image paths with file suffixes")
+    for image_path in image_paths:
+        if image_path.suffix.lower() != suffix:
+            raise ValueError("direct imageio_ffmpeg encoding requires a single image file suffix per video")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _remove_file_if_present(output_path)
+    fps_arg = _format_fps(fps)
+
+    with tempfile.TemporaryDirectory(prefix=f".{output_path.stem}_ffmpeg_", dir=output_path.parent) as temp_dir:
+        temp_root = Path(temp_dir)
+        for index, image_path in enumerate(image_paths):
+            staged_path = temp_root / f"frame_{index:06d}{suffix}"
+            try:
+                staged_path.symlink_to(image_path.resolve())
+            except OSError:
+                shutil.copy2(image_path, staged_path)
+
+        command = [
+            str(ffmpeg_exe),
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-framerate",
+            fps_arg,
+            "-start_number",
+            "0",
+            "-i",
+            str(temp_root / f"frame_%06d{suffix}"),
+            "-frames:v",
+            str(len(image_paths)),
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            "-r",
+            fps_arg,
+            "-threads",
+            "1",
+            "-map_metadata",
+            "-1",
+            "-f",
+            "mp4",
+            str(output_path),
+        ]
+        try:
+            subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or exc.stdout or "").strip()
+            suffix_detail = f": {detail}" if detail else ""
+            raise ValueError(
+                f"imageio_ffmpeg ffmpeg command failed with exit code {exc.returncode}{suffix_detail}"
+            ) from exc
+
+
 def _encode_video_imageio(image_paths: list[Path], output_path: Path, fps: float) -> None:
     try:
         imageio = importlib.import_module("imageio.v2")
@@ -206,6 +297,44 @@ def _verify_video(path: Path) -> None:
         raise ValueError(f"video file is empty: {path}")
 
 
+def _encode_video_with_fallback(
+    image_paths: list[Path],
+    output_path: Path,
+    fps: float,
+    dependencies: dict[str, dict[str, Any]],
+) -> tuple[str, list[str]]:
+    backend_errors: list[str] = []
+    backends = [
+        ("imageio_ffmpeg", _dependency_flag(dependencies, "imageio_ffmpeg"), _encode_video_imageio_ffmpeg),
+        ("imageio", _dependency_flag(dependencies, "imageio"), _encode_video_imageio),
+        ("cv2", _dependency_flag(dependencies, "cv2"), _encode_video_cv2),
+    ]
+
+    for backend_name, available, encoder in backends:
+        if not available:
+            continue
+        try:
+            encoder(image_paths, output_path, fps)
+        except Exception as exc:
+            _remove_file_if_present(output_path)
+            backend_errors.append(f"{backend_name} failed: {exc}")
+            continue
+        return backend_name, backend_errors
+
+    if backend_errors:
+        raise ValueError("; ".join(backend_errors))
+    raise ValueError("video encoding requires imageio_ffmpeg, imageio, or cv2")
+
+
+def _summarize_video_backends(video_backends: dict[str, str]) -> str | None:
+    unique_backends = sorted(set(video_backends.values()))
+    if not unique_backends:
+        return None
+    if len(unique_backends) == 1:
+        return unique_backends[0]
+    return "mixed"
+
+
 def _write_videos(
     skeleton_root: Path,
     output_root: Path,
@@ -213,23 +342,22 @@ def _write_videos(
     frames: list[dict[str, Any]],
     fps: float,
     dependencies: dict[str, dict[str, Any]],
-) -> list[Path]:
-    imageio_available = bool(dependencies.get("imageio", {}).get("available"))
-    cv2_available = bool(dependencies.get("cv2", {}).get("available"))
-    if not imageio_available and not cv2_available:
-        raise ValueError("video encoding requires imageio or cv2")
+) -> tuple[list[Path], dict[str, str], list[str]]:
+    if not implemented_video_backend_ready(dependencies):
+        raise ValueError("video encoding requires imageio_ffmpeg, imageio, or cv2")
 
     written: list[Path] = []
+    video_backends: dict[str, str] = {}
+    backend_errors: list[str] = []
     for key in ["observation.image", "observation.wrist_image"]:
         image_paths = _frame_image_paths(skeleton_root, frames, key)
         output_path = output_root / "videos" / key / f"episode_{episode_index:06d}.mp4"
-        if imageio_available:
-            _encode_video_imageio(image_paths, output_path, fps)
-        else:
-            _encode_video_cv2(image_paths, output_path, fps)
+        backend_name, errors = _encode_video_with_fallback(image_paths, output_path, fps, dependencies)
         _verify_video(output_path)
         written.append(output_path)
-    return written
+        video_backends[key] = backend_name
+        backend_errors.extend(f"{key}: {error}" for error in errors)
+    return written, video_backends, backend_errors
 
 
 def _base_report(
@@ -252,6 +380,9 @@ def _base_report(
         "lerobot_api_available": bool(preflight.get("lerobot_api_available")),
         "parquet_written": False,
         "videos_written": False,
+        "video_backend": None,
+        "video_backends": {},
+        "video_backend_errors": [],
         "metadata_written": False,
         "skipped_reasons": [],
         "next_recommended_action": "Run this command on the lab ForceVLA environment before treating readiness as final.",
@@ -319,15 +450,20 @@ def write_real_lerobot_export(
         for video_path in video_paths:
             _remove_file_if_present(video_path)
         report["skipped_reasons"].append(
-            "video dependencies unavailable; requires ffmpeg and imageio, cv2, or PIL readiness"
+            f"video dependencies unavailable; {IMPLEMENTED_VIDEO_ENCODER_REQUIREMENT}"
         )
-    elif not _dependency_available(preflight, "imageio") and not _dependency_available(preflight, "cv2"):
+    elif not any(_dependency_available(preflight, key) for key in ["imageio_ffmpeg", "imageio", "cv2"]):
         for video_path in video_paths:
             _remove_file_if_present(video_path)
-        report["skipped_reasons"].append("video encoding skipped: imageio and cv2 are unavailable")
+        report["skipped_reasons"].append("video encoding skipped: imageio_ffmpeg, imageio, and cv2 are unavailable")
     else:
         try:
-            _write_videos(skeleton_root, output_root, episode_index, frames, fps, preflight["dependency_summary"])
+            _, video_backends, backend_errors = _write_videos(
+                skeleton_root, output_root, episode_index, frames, fps, preflight["dependency_summary"]
+            )
+            report["video_backends"] = video_backends
+            report["video_backend"] = _summarize_video_backends(video_backends)
+            report["video_backend_errors"] = backend_errors
             report["videos_written"] = True
         except Exception as exc:
             for video_path in video_paths:

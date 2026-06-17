@@ -2,7 +2,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+import doosan_forcevla_data.inspect.preflight_real_export as preflight_module
 from doosan_forcevla_data.convert.plan_lerobot_export import write_lerobot_export_plan
 from doosan_forcevla_data.convert.raw_to_processed import convert_raw_to_processed
 from doosan_forcevla_data.convert.stage_lerobot_export import stage_lerobot_export
@@ -81,6 +83,54 @@ class PreflightRealExportTests(unittest.TestCase):
             data = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertIn("real_export_ready", data)
             self.assertIn("video_export_ready", data)
+
+    def test_preflight_reports_imageio_ffmpeg_video_readiness(self):
+        dependencies = {
+            "python": {"available": True, "version": "3", "detail": "python"},
+            "pyarrow": {"available": False, "version": None, "detail": "missing"},
+            "pandas": {"available": False, "version": None, "detail": "missing"},
+            "lerobot": {"available": False, "version": None, "detail": "missing"},
+            "cv2": {"available": False, "version": None, "detail": "missing"},
+            "imageio": {"available": False, "version": None, "detail": "missing"},
+            "imageio_ffmpeg": {"available": True, "version": "1.0", "detail": "bundled ffmpeg"},
+            "PIL": {"available": False, "version": None, "detail": "missing"},
+            "ffmpeg": {"available": False, "version": None, "detail": "no system ffmpeg"},
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = self._build_skeleton(Path(tmpdir), "forcevla_13d", "copy")
+            with mock.patch.object(preflight_module, "check_export_dependencies", return_value=dependencies):
+                report = preflight_real_export(output)
+
+        self.assertIn("imageio_ffmpeg", report["dependency_summary"])
+        self.assertTrue(report["dependency_summary"]["imageio_ffmpeg"]["available"])
+        self.assertTrue(report["video_ready"])
+
+    def test_preflight_does_not_treat_pil_plus_ffmpeg_as_video_ready_without_encoder(self):
+        dependencies = {
+            "python": {"available": True, "version": "3", "detail": "python"},
+            "pyarrow": {"available": False, "version": None, "detail": "missing"},
+            "pandas": {"available": False, "version": None, "detail": "missing"},
+            "lerobot": {"available": False, "version": None, "detail": "missing"},
+            "cv2": {"available": False, "version": None, "detail": "missing"},
+            "imageio": {"available": False, "version": None, "detail": "missing"},
+            "imageio_ffmpeg": {"available": False, "version": None, "detail": "missing"},
+            "PIL": {"available": True, "version": "10", "detail": "pillow"},
+            "ffmpeg": {"available": True, "version": None, "detail": "system ffmpeg"},
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = self._build_skeleton(Path(tmpdir), "forcevla_13d", "copy")
+            with mock.patch.object(preflight_module, "check_export_dependencies", return_value=dependencies):
+                report = preflight_real_export(output)
+
+        self.assertTrue(report["dependency_summary"]["PIL"]["available"])
+        self.assertTrue(report["dependency_summary"]["ffmpeg"]["available"])
+        self.assertFalse(report["dependency_summary"]["imageio_ffmpeg"]["available"])
+        self.assertFalse(report["dependency_summary"]["imageio"]["available"])
+        self.assertFalse(report["dependency_summary"]["cv2"]["available"])
+        self.assertFalse(report["video_ready"])
+        self.assertFalse(report["video_export_ready"])
 
     def test_prompt_task_mismatch_is_reported_without_crashing(self):
         with tempfile.TemporaryDirectory() as tmpdir:

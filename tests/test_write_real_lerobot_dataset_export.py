@@ -2,7 +2,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+import doosan_forcevla_data.convert.write_real_lerobot_dataset_export as dataset_export_module
 from doosan_forcevla_data.convert.plan_lerobot_export import write_lerobot_export_plan
 from doosan_forcevla_data.convert.raw_to_processed import convert_raw_to_processed
 from doosan_forcevla_data.convert.stage_lerobot_export import stage_lerobot_export
@@ -91,6 +93,41 @@ class WriteRealLeRobotDatasetExportTests(unittest.TestCase):
                 ]
                 if report["videos_written"]:
                     self.assertTrue(all(path.is_file() for path in video_paths))
+
+    def test_dataset_export_video_ready_requires_implemented_encoder(self):
+        dependencies = {
+            "python": {"available": True, "version": "3", "detail": "python"},
+            "pyarrow": {"available": False, "version": None, "detail": "missing"},
+            "pandas": {"available": False, "version": None, "detail": "missing"},
+            "lerobot": {"available": False, "version": None, "detail": "missing"},
+            "cv2": {"available": False, "version": None, "detail": "missing"},
+            "imageio": {"available": False, "version": None, "detail": "missing"},
+            "imageio_ffmpeg": {"available": False, "version": None, "detail": "missing"},
+            "PIL": {"available": True, "version": "10", "detail": "pillow"},
+            "ffmpeg": {"available": True, "version": None, "detail": "system ffmpeg"},
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            skeleton = self._build_multi_skeleton(root, "forcevla_13d", "symlink")
+            output = root / "real_lerobot_multi" / "forcevla_13d" / "doosan_peg_in_hole_v0"
+
+            with mock.patch.object(dataset_export_module, "check_export_dependencies", return_value=dependencies):
+                report_path = write_real_lerobot_dataset_export(skeleton, output, mode="write-if-available")
+
+            report = self._read_report(report_path)
+
+        per_episode_reasons = [
+            reason
+            for episode in report["per_episode"]
+            for reason in episode["skipped_reasons"]
+        ]
+        reasons = " ".join(str(reason) for reason in report["skipped_reasons"] + per_episode_reasons)
+        self.assertFalse(report["video_ready"])
+        self.assertFalse(report["videos_written"])
+        self.assertIn("requires one implemented video encoder: imageio_ffmpeg, imageio, or cv2", reasons)
+        self.assertNotIn("PIL readiness", reasons)
+        self.assertNotIn("ffmpeg with imageio", reasons)
 
     def test_multi_doosan_full_25d_dry_run_reports_profile_dimensions(self):
         with tempfile.TemporaryDirectory() as tmpdir:

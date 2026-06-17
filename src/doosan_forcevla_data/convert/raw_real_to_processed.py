@@ -23,6 +23,7 @@ from doosan_forcevla_data.schema.processed_schema import (
 from doosan_forcevla_data.validate.validate_processed_episode import validate_processed_episode
 from doosan_forcevla_data.validate.validate_raw_real_episode import (
     raw_real_conversion_readiness_errors,
+    selected_wrench_metadata_for_model_state,
     validate_raw_real_episode,
 )
 
@@ -562,6 +563,7 @@ def convert_raw_real_to_processed(
             f"ERROR: {error}" for error in conversion_readiness_errors
         )
         raise ValueError(message)
+    selected_wrench_metadata = selected_wrench_metadata_for_model_state(streams, records_by_stream)
 
     ordered_indexes = sorted(primary_indexes)
     if ordered_indexes != list(range(len(ordered_indexes))):
@@ -685,6 +687,13 @@ def convert_raw_real_to_processed(
         "raw_validation_warnings": validation.warnings,
         "command_context_policy": "diagnostic only; never used as action label",
     }
+
+    if selected_wrench_metadata:
+        processed_metadata["wrench_source_metadata"] = {
+            source: selected_wrench_metadata[source]
+            for source in sorted(wrench_sources)
+            if source in selected_wrench_metadata
+        }
     if command_context_debug is not None:
         processed_metadata["optional_debug"] = {"command_context": command_context_debug}
 

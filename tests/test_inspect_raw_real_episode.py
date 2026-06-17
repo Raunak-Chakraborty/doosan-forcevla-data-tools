@@ -28,11 +28,33 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
             handle.write(json.dumps(record, separators=(",", ":")) + "\n")
 
 
+
+def _valid_wrench_sources_metadata() -> dict:
+    return {
+        "external_tcp_force": {
+            "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+            "force_unit": "N",
+            "torque_unit": "Nm",
+            "frame": "base",
+            "compensation": "estimated_external_tcp_force",
+            "approved_for_model_state": True,
+        },
+        "raw_force_torque": {
+            "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+            "force_unit": "N",
+            "torque_unit": "Nm",
+            "frame": "flange",
+            "compensation": "raw_flange_sensor",
+            "approved_for_model_state": False,
+        },
+    }
+
 def _mark_non_synthetic(
     episode: Path,
     convention: str | None = "rotation_vector_degrees",
     strict_lab_provenance: bool = True,
     source_stamp_unit: str | None = "seconds",
+    include_wrench_metadata: bool = True,
 ) -> None:
     metadata_path = episode / "metadata.json"
     metadata = _read_json(metadata_path)
@@ -102,6 +124,11 @@ def _mark_non_synthetic(
             if isinstance(entry, dict):
                 entry["verified"] = True
                 entry["source_name"] = source_names.get(stream_name, f"/verified/{stream_name}")
+    robot_entry = streams_index["streams"]["robot_state_rt"]
+    if include_wrench_metadata:
+        robot_entry["wrench_sources"] = _valid_wrench_sources_metadata()
+    else:
+        robot_entry.pop("wrench_sources", None)
     _write_json(streams_index_path, streams_index)
 
 
@@ -377,6 +404,19 @@ class InspectRawRealEpisodeTests(unittest.TestCase):
                 any("source_stamp" in blocker and "timebase" in blocker for blocker in report["conversion_blockers"])
             )
             self.assertTrue(any("source_stamp" in error and "timebase" in error for error in report["errors"]))
+
+
+    def test_non_synthetic_selected_wrench_missing_metadata_blocks_readiness(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode, include_wrench_metadata=False)
+
+            report = inspect_raw_real_episode(episode)
+
+            self.assertFalse(report["ready_for_conversion"])
+            self.assertTrue(any("wrench metadata" in error for error in report["errors"]))
+            self.assertTrue(any("wrench metadata" in blocker for blocker in report["conversion_blockers"]))
 
     def test_non_synthetic_verified_boolean_without_convention_blocks_readiness(self):
         with tempfile.TemporaryDirectory() as tmpdir:

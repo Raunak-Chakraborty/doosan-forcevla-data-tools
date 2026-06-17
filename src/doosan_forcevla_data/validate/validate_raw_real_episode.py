@@ -44,6 +44,13 @@ CONVERTER_REQUIRED_ALIGNMENT_STREAMS = ["joint_states", "external_camera", "wris
 CONVERTER_ALIGNED_OPTIONAL_STREAMS = ["gripper_state"]
 ROTATION_VECTOR_DEGREES = "rotation_vector_degrees"
 ROTATION_VECTOR_RADIANS = "rotation_vector_radians"
+
+SUPPORTED_TCP_ORIENTATION_CONVENTIONS = {ROTATION_VECTOR_DEGREES, ROTATION_VECTOR_RADIANS}
+UNSUPPORTED_TCP_ORIENTATION_CONVENTIONS = {
+    "doosan_posx_euler_zyz_degrees",
+    "doosan_robotstate_actual_tcp_position_euler_zyz_degrees",
+    "euler_zyz_degrees",
+}
 EXPLICIT_SYNTHETIC_COLLECTION_METHODS = {"synthetic_raw_real", "synthetic_raw_real_fixture"}
 EXPLICIT_SYNTHETIC_RECORDER_VERSIONS = {"synthetic_raw_real_generator_v0"}
 SOURCE_STAMP_SECONDS_UNIT = "seconds"
@@ -173,6 +180,36 @@ def _tcp_orientation_convention(
         return recorder_report.get("tcp_orientation_convention")
     return None
 
+
+
+def _quoted_values(values: set[str]) -> str:
+    return ", ".join(f"'{value}'" for value in sorted(values))
+
+
+def tcp_orientation_convention_readiness_error(convention: Any) -> str | None:
+    supported = _quoted_values(SUPPORTED_TCP_ORIENTATION_CONVENTIONS)
+    unsupported = _quoted_values(UNSUPPORTED_TCP_ORIENTATION_CONVENTIONS)
+    if convention in SUPPORTED_TCP_ORIENTATION_CONVENTIONS:
+        return None
+    if convention in UNSUPPORTED_TCP_ORIENTATION_CONVENTIONS:
+        return (
+            "metadata/recorder_report: tcp_orientation_convention "
+            f"{convention!r} is recognized but unsupported for conversion; "
+            "Doosan native Euler ZYZ must be live-verified and converted before use. "
+            f"Supported conversion conventions: {supported}"
+        )
+    if convention is None:
+        return (
+            "metadata/recorder_report: tcp_orientation_convention must be one of "
+            f"{supported} for non-synthetic conversion; "
+            "tcp_orientation_convention_verified alone is not sufficient. "
+            f"Recognized but unsupported Doosan/native conventions: {unsupported}"
+        )
+    return (
+        "metadata/recorder_report: unknown tcp_orientation_convention "
+        f"{convention!r}; supported conversion conventions: {supported}; "
+        f"recognized but unsupported Doosan/native conventions: {unsupported}"
+    )
 
 def _supported_unit_error(
     units: dict[str, Any],
@@ -1040,12 +1077,9 @@ def raw_real_conversion_readiness_errors(
     errors.extend(_numeric_source_stamp_timebase_errors(streams_index, records_by_stream))
 
     convention = _tcp_orientation_convention(metadata, recorder_report)
-    if convention not in {ROTATION_VECTOR_DEGREES, ROTATION_VECTOR_RADIANS}:
-        errors.append(
-            "metadata/recorder_report: tcp_orientation_convention must be one of "
-            "'rotation_vector_degrees' or 'rotation_vector_radians' for non-synthetic conversion; "
-            "tcp_orientation_convention_verified alone is not sufficient"
-        )
+    convention_error = tcp_orientation_convention_readiness_error(convention)
+    if convention_error is not None:
+        errors.append(convention_error)
 
     errors.extend(_strict_lab_provenance_errors(metadata, recorder_report, streams, records_by_stream))
     errors.extend(_wrench_metadata_errors(streams, records_by_stream))

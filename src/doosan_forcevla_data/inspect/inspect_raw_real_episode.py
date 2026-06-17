@@ -23,6 +23,7 @@ from doosan_forcevla_data.validate.validate_raw_real_episode import (
     ROTATION_VECTOR_RADIANS,
     is_explicit_synthetic_episode,
     raw_real_conversion_readiness_errors,
+    tcp_orientation_convention_readiness_error,
     validate_raw_real_episode,
 )
 
@@ -435,7 +436,10 @@ def _orientation_guard(
         return "tcp_orientation_convention=rotation_vector_degrees", True
     if convention == ROTATION_VECTOR_RADIANS:
         return "tcp_orientation_convention=rotation_vector_radians", True
-    return "non-synthetic episode requires explicit rotation-vector TCP orientation convention before conversion", False
+    error = tcp_orientation_convention_readiness_error(convention)
+    if error is None:
+        return "tcp_orientation_convention is ready for conversion", True
+    return error, False
 
 
 def _robot_state_summary(

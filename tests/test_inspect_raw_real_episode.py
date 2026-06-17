@@ -454,6 +454,21 @@ class InspectRawRealEpisodeTests(unittest.TestCase):
             self.assertTrue(any("TCP orientation convention" in blocker for blocker in report["conversion_blockers"]))
             self.assertTrue(any("tcp_orientation_convention" in error for error in report["errors"]))
 
+
+    def test_non_synthetic_doosan_euler_convention_blocks_readiness(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode, convention="doosan_robotstate_actual_tcp_position_euler_zyz_degrees")
+
+            report = inspect_raw_real_episode(episode)
+
+            self.assertFalse(report["ready_for_conversion"])
+            self.assertFalse(report["robot_state_summary"]["orientation_convention_ready"])
+            self.assertIn("recognized but unsupported", report["robot_state_summary"]["orientation_convention_guard"])
+            self.assertTrue(any("Doosan native Euler ZYZ" in error for error in report["errors"]))
+            self.assertTrue(any("recognized but unsupported" in blocker for blocker in report["conversion_blockers"]))
+
     def test_joint_states_fallback_can_make_non_synthetic_episode_ready(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = Path(tmpdir) / "episode_000000"

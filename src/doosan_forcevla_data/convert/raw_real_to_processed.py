@@ -22,6 +22,7 @@ from doosan_forcevla_data.schema.processed_schema import (
 )
 from doosan_forcevla_data.validate.validate_processed_episode import validate_processed_episode
 from doosan_forcevla_data.validate.validate_raw_real_episode import (
+    tcp_orientation_convention_readiness_error,
     is_explicit_synthetic_episode,
     raw_real_conversion_readiness_errors,
     selected_wrench_metadata_for_model_state,
@@ -288,11 +289,10 @@ def _orientation_policy(
     if convention == ROTATION_VECTOR_RADIANS:
         return False, "tcp_orientation_convention=rotation_vector_radians", "rad"
 
-    raise ValueError(
-        "non-synthetic raw-real episode requires explicit supported TCP orientation convention; "
-        "set tcp_orientation_convention='rotation_vector_degrees' or "
-        "tcp_orientation_convention='rotation_vector_radians' only after lab verification"
-    )
+    error = tcp_orientation_convention_readiness_error(convention)
+    if error is None:
+        error = f"tcp_orientation_convention {convention!r} is not implemented by this converter"
+    raise ValueError(error)
 
 
 def _select_joint_vectors(

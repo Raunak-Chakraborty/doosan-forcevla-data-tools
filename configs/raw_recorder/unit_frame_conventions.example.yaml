@@ -65,6 +65,10 @@ conversion_policy:
   record_index_policy: episode_level_aligned_sample_index_for_converter_streams
   timestamp_alignment: diagnostics_only_no_interpolation_in_raw_real_v0
   block_large_required_camera_source_stamp_offsets: true
+  default_camera_robot_source_stamp_offset_tolerance: 0.5 / fps
+  fallback_camera_robot_source_stamp_offset_tolerance_sec: 0.02
+  optional_timebase_override_key: max_camera_robot_source_stamp_offset_sec
+  max_camera_robot_source_stamp_offset_override: min(0.1, 2.0 / fps)
   command_streams_are_labels: false
   terminal_padding_action: [0, 0, 0, 0, 0, 0, 0]
   normalize_tcp_translation_to_meters: true

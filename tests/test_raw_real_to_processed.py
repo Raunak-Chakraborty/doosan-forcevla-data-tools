@@ -34,6 +34,15 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
 
 
 
+
+def _shift_camera_source_stamps(episode: Path, offset_sec: float) -> None:
+    for stream_name in ["external_camera", "wrist_camera"]:
+        index_path = episode / "streams" / stream_name / "index.jsonl"
+        records = _read_jsonl(index_path)
+        for record in records:
+            record["source_stamp"] = float(record["source_stamp"]) + offset_sec
+        _write_jsonl(index_path, records)
+
 def _valid_wrench_sources_metadata() -> dict:
     return {
         "external_tcp_force": {
@@ -683,6 +692,22 @@ class RawRealToProcessedTests(unittest.TestCase):
                 convert_raw_real_to_processed(raw_episode, processed_episode, overwrite=True)
 
             self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
+
+
+    def test_camera_source_stamp_offset_above_half_frame_fails_before_output_creation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4, fps=30.0)
+            _mark_non_synthetic(raw_episode)
+            _shift_camera_source_stamps(raw_episode, 0.05)
+
+            with self.assertRaisesRegex(ValueError, "allowed camera/robot source_stamp offset is 0.016667s"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            self.assertFalse(processed_episode.exists())
 
     def test_non_synthetic_missing_robot_units_is_blocked_before_conversion(self):
         with tempfile.TemporaryDirectory() as tmpdir:

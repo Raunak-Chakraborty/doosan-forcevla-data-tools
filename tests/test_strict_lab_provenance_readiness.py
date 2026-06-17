@@ -16,6 +16,27 @@ def _write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
+
+def _valid_wrench_sources_metadata() -> dict:
+    return {
+        "external_tcp_force": {
+            "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+            "force_unit": "N",
+            "torque_unit": "Nm",
+            "frame": "base",
+            "compensation": "estimated_external_tcp_force",
+            "approved_for_model_state": True,
+        },
+        "raw_force_torque": {
+            "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+            "force_unit": "N",
+            "torque_unit": "Nm",
+            "frame": "flange",
+            "compensation": "raw_flange_sensor",
+            "approved_for_model_state": False,
+        },
+    }
+
 def _mark_non_synthetic_with_required_units(episode: Path) -> None:
     metadata_path = episode / "metadata.json"
     metadata = _read_json(metadata_path)
@@ -39,7 +60,7 @@ def _mark_non_synthetic_with_required_units(episode: Path) -> None:
         "flange_frame": "link_6",
         "tool_frame": "tool0",
         "force_torque_source": "robot_state_rt.external_tcp_force",
-        "gripper_state_source": "not_available_for_this_episode",
+        "gripper_state_source": "/gripper_state",
         "time_sync_verified": True,
     }
     _write_json(metadata_path, metadata)
@@ -55,6 +76,8 @@ def _mark_non_synthetic_with_required_units(episode: Path) -> None:
     index_path = episode / "streams" / "index.json"
     index = _read_json(index_path)
     index["synthetic"] = False
+    index["timebase"] = {"source_stamp_unit": "seconds"}
+    index["streams"]["robot_state_rt"]["wrench_sources"] = _valid_wrench_sources_metadata()
 
     source_names = {
         "joint_states": "/joint_states",
@@ -79,7 +102,7 @@ class StrictLabProvenanceReadinessTests(unittest.TestCase):
     def test_strict_lab_provenance_verified_real_episode_passes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = Path(tmpdir) / "episode_000000"
-            make_synthetic_raw_real_episode(episode, frame_count=4)
+            make_synthetic_raw_real_episode(episode, frame_count=4, include_optional_streams=True)
             _mark_non_synthetic_with_required_units(episode)
 
             result = validate_raw_real_episode(episode)
@@ -91,7 +114,7 @@ class StrictLabProvenanceReadinessTests(unittest.TestCase):
     def test_strict_lab_provenance_unknown_stream_source_fails(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = Path(tmpdir) / "episode_000000"
-            make_synthetic_raw_real_episode(episode, frame_count=4)
+            make_synthetic_raw_real_episode(episode, frame_count=4, include_optional_streams=True)
             _mark_non_synthetic_with_required_units(episode)
 
             index_path = episode / "streams" / "index.json"
@@ -109,7 +132,7 @@ class StrictLabProvenanceReadinessTests(unittest.TestCase):
     def test_strict_lab_provenance_unverified_stream_fails(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = Path(tmpdir) / "episode_000000"
-            make_synthetic_raw_real_episode(episode, frame_count=4)
+            make_synthetic_raw_real_episode(episode, frame_count=4, include_optional_streams=True)
             _mark_non_synthetic_with_required_units(episode)
 
             index_path = episode / "streams" / "index.json"
@@ -125,7 +148,7 @@ class StrictLabProvenanceReadinessTests(unittest.TestCase):
     def test_strict_lab_provenance_unknown_live_graph_frame_fails(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = Path(tmpdir) / "episode_000000"
-            make_synthetic_raw_real_episode(episode, frame_count=4)
+            make_synthetic_raw_real_episode(episode, frame_count=4, include_optional_streams=True)
             _mark_non_synthetic_with_required_units(episode)
 
             metadata_path = episode / "metadata.json"

@@ -33,17 +33,81 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
             handle.write(json.dumps(record, separators=(",", ":")) + "\n")
 
 
-def _mark_non_synthetic(episode: Path, convention: str | None = "rotation_vector_degrees") -> None:
+
+
+def _shift_camera_source_stamps(episode: Path, offset_sec: float) -> None:
+    for stream_name in ["external_camera", "wrist_camera"]:
+        index_path = episode / "streams" / stream_name / "index.jsonl"
+        records = _read_jsonl(index_path)
+        for record in records:
+            record["source_stamp"] = float(record["source_stamp"]) + offset_sec
+        _write_jsonl(index_path, records)
+
+def _valid_wrench_sources_metadata() -> dict:
+    return {
+        "external_tcp_force": {
+            "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+            "force_unit": "N",
+            "torque_unit": "Nm",
+            "frame": "base",
+            "compensation": "estimated_external_tcp_force",
+            "approved_for_model_state": True,
+        },
+        "raw_force_torque": {
+            "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+            "force_unit": "N",
+            "torque_unit": "Nm",
+            "frame": "flange",
+            "compensation": "raw_flange_sensor",
+            "approved_for_model_state": False,
+        },
+    }
+
+def _mark_non_synthetic(
+    episode: Path,
+    convention: str | None = "rotation_vector_degrees",
+    collection_method: str = "passive_real_recorder",
+    recorder_version: str = "passive_real_recorder_v0",
+    strict_lab_provenance: bool = True,
+    source_stamp_unit: str | None = "seconds",
+    include_wrench_metadata: bool = True,
+) -> None:
     metadata_path = episode / "metadata.json"
     metadata = _read_json(metadata_path)
-    metadata["collection_method"] = "passive_real_recorder"
-    metadata["recorder_version"] = "passive_real_recorder_v0"
+    metadata["collection_method"] = collection_method
+    metadata["recorder_version"] = recorder_version
+    metadata.pop("synthetic", None)
     metadata["source_workspace"] = {"path": "lab/offline", "verified": True}
     metadata.pop("tcp_orientation_convention_verified", None)
     if convention is None:
         metadata.pop("tcp_orientation_convention", None)
     else:
         metadata["tcp_orientation_convention"] = convention
+    if strict_lab_provenance:
+        metadata["lab_provenance_required"] = True
+        metadata["source_workspace"] = {
+            "path": "/home/ktt_rc/robotics_thesis/lab_myros2_ws/src/MyROS2",
+            "git_commit": "abc1234",
+            "git_remote": "https://github.com/Raunak-Chakraborty/doosan-forcevla-data-tools.git",
+            "git_branch": "main",
+            "verified": True,
+        }
+        metadata["live_graph_verification"] = {
+            "exact_doosan_namespace": "/dsr01",
+            "external_camera_topic": "/external_camera/color/image_raw",
+            "wrist_camera_topic": "/wrist_camera/color/image_raw",
+            "read_data_rt_service": "/dsr01/dsr_controller2/realtime/read_data_rt",
+            "tcp_frame": "tcp_link",
+            "flange_frame": "link_6",
+            "tool_frame": "tool0",
+            "force_torque_source": "robot_state_rt.external_tcp_force",
+            "gripper_state_source": "not_available_for_this_episode",
+            "time_sync_verified": True,
+        }
+    else:
+        metadata.pop("lab_provenance_required", None)
+        metadata.pop("strict_lab_provenance", None)
+        metadata.pop("live_graph_verification", None)
     _write_json(metadata_path, metadata)
 
     recorder_report_path = episode / "recorder_report.json"
@@ -57,7 +121,52 @@ def _mark_non_synthetic(episode: Path, convention: str | None = "rotation_vector
     streams_index_path = episode / "streams" / "index.json"
     streams_index = _read_json(streams_index_path)
     streams_index["synthetic"] = False
+    if source_stamp_unit is None:
+        streams_index.pop("timebase", None)
+    else:
+        streams_index["timebase"] = {"source_stamp_unit": source_stamp_unit}
+
+    if strict_lab_provenance:
+        source_names = {
+            "joint_states": "/dsr01/joint_states",
+            "robot_state_rt": "/dsr01/dsr_controller2/realtime/read_data_rt",
+            "tf": "/tf",
+            "tf_static": "/tf_static",
+            "external_camera": "/external_camera/color/image_raw",
+            "wrist_camera": "/wrist_camera/color/image_raw",
+            "command_context": "/doosan_teleop/cmd_vel_6d",
+            "gripper_state": "/gripper_state",
+        }
+        for stream_name, entry in streams_index.get("streams", {}).items():
+            if isinstance(entry, dict):
+                entry["verified"] = True
+                entry["source_name"] = source_names.get(stream_name, f"/verified/{stream_name}")
+    robot_entry = streams_index["streams"]["robot_state_rt"]
+    if include_wrench_metadata:
+        robot_entry["wrench_sources"] = _valid_wrench_sources_metadata()
+    else:
+        robot_entry.pop("wrench_sources", None)
     _write_json(streams_index_path, streams_index)
+
+
+def _truncate_to_one_aligned_record(episode: Path) -> None:
+    streams_index_path = episode / "streams" / "index.json"
+    streams_index = _read_json(streams_index_path)
+    for stream_name in ["joint_states", "robot_state_rt", "tf", "external_camera", "wrist_camera"]:
+        streams_index["streams"][stream_name]["record_count"] = 1
+    _write_json(streams_index_path, streams_index)
+
+    for relative_path in [
+        "streams/joint_states.jsonl",
+        "streams/robot_state_rt.jsonl",
+        "streams/tf.jsonl",
+    ]:
+        path = episode / relative_path
+        _write_jsonl(path, _read_jsonl(path)[:1])
+
+    for stream_name in ["external_camera", "wrist_camera"]:
+        path = episode / "streams" / stream_name / "index.jsonl"
+        _write_jsonl(path, _read_jsonl(path)[:1])
 
 
 class RawRealToProcessedTests(unittest.TestCase):
@@ -109,6 +218,94 @@ class RawRealToProcessedTests(unittest.TestCase):
             self.assertEqual(frames[-1]["measured_action"], [0.0] * ACTION_DIM)
             self.assertTrue(has_nonzero_translation)
             self.assertTrue(has_nonzero_rotation)
+
+    def test_two_frame_synthetic_raw_real_episode_converts_with_one_action(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=2)
+            convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            result = validate_processed_episode(processed_episode)
+            self.assertTrue(result.ok, result.errors)
+            frames = _read_jsonl(processed_episode / "frames.jsonl")
+            self.assertEqual(len(frames), 2)
+            self.assertFalse(frames[0]["action_is_terminal_padding"])
+            self.assertTrue(frames[-1]["action_is_terminal_padding"])
+            self.assertTrue(any(abs(value) > 1e-12 for value in frames[0]["measured_action"][:6]))
+
+    def test_one_aligned_record_fails_before_output_creation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=2)
+            _truncate_to_one_aligned_record(raw_episode)
+
+            validation = validate_raw_real_episode(raw_episode)
+            report = inspect_raw_real_episode(raw_episode)
+            self.assertTrue(validation.ok, validation.errors)
+            self.assertFalse(report["ready_for_conversion"])
+            self.assertTrue(
+                any("at least 2 records" in blocker for blocker in report["conversion_blockers"]),
+                report["conversion_blockers"],
+            )
+            with self.assertRaisesRegex(ValueError, "requires at least 2 aligned records; got 1"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            self.assertFalse(processed_episode.exists())
+
+    def test_one_aligned_record_fails_before_overwriting_existing_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=2)
+            _truncate_to_one_aligned_record(raw_episode)
+            processed_episode.mkdir(parents=True)
+            sentinel = processed_episode / "keep.txt"
+            sentinel.write_text("keep\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "requires at least 2 aligned records; got 1"):
+                convert_raw_real_to_processed(raw_episode, processed_episode, overwrite=True)
+
+            self.assertTrue(sentinel.is_file())
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
+            self.assertFalse((processed_episode / "metadata_processed.json").exists())
+            self.assertFalse((processed_episode / "frames.jsonl").exists())
+
+    def test_cli_one_aligned_record_fails_before_output_creation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=2)
+            _truncate_to_one_aligned_record(raw_episode)
+            env = dict(os.environ)
+            src_path = Path(__file__).resolve().parents[1] / "src"
+            env["PYTHONPATH"] = str(src_path) + os.pathsep + env.get("PYTHONPATH", "")
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "doosan_forcevla_data.convert.raw_real_to_processed",
+                    "--raw-real",
+                    str(raw_episode),
+                    "--output",
+                    str(processed_episode),
+                ],
+                check=False,
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("requires at least 2 aligned records; got 1", completed.stdout)
+            self.assertFalse(processed_episode.exists())
 
     def test_optional_streams_absent_convert_with_zero_gripper_position(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -313,6 +510,70 @@ class RawRealToProcessedTests(unittest.TestCase):
                 self.assertNotEqual(frame["measured_action"], [9.0] * ACTION_DIM)
                 self.assertNotEqual(frame["measured_action"][:6], [9.0, 8.0, 7.0, 6.0, 5.0, 4.0])
 
+
+    def test_non_synthetic_numeric_source_stamp_without_timebase_fails_before_writing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode, source_stamp_unit=None)
+
+            with self.assertRaisesRegex(ValueError, "source_stamp unit/timebase"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            self.assertFalse(processed_episode.exists())
+
+    def test_non_synthetic_numeric_source_stamp_without_timebase_preserves_existing_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            sentinel = processed_episode / "sentinel.txt"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode, source_stamp_unit=None)
+            processed_episode.mkdir(parents=True)
+            sentinel.write_text("keep\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "source_stamp unit/timebase"):
+                convert_raw_real_to_processed(raw_episode, processed_episode, overwrite=True)
+
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
+
+
+    def test_non_synthetic_selected_wrench_missing_metadata_fails_before_writing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode, include_wrench_metadata=False)
+
+            with self.assertRaisesRegex(ValueError, "wrench metadata"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            self.assertFalse(processed_episode.exists())
+
+    def test_non_synthetic_selected_wrench_missing_metadata_preserves_existing_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            sentinel = processed_episode / "sentinel.txt"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode, include_wrench_metadata=False)
+            processed_episode.mkdir(parents=True)
+            sentinel.write_text("keep\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "wrench metadata"):
+                convert_raw_real_to_processed(raw_episode, processed_episode, overwrite=True)
+
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
+
     def test_non_synthetic_without_explicit_tcp_orientation_convention_fails_fast(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -324,6 +585,129 @@ class RawRealToProcessedTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "tcp_orientation_convention"):
                 convert_raw_real_to_processed(raw_episode, processed_episode)
+
+    def test_non_synthetic_without_strict_lab_provenance_fails_before_writing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode, strict_lab_provenance=False)
+
+            with self.assertRaisesRegex(ValueError, "strict lab provenance"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            self.assertFalse(processed_episode.exists())
+
+    def test_non_synthetic_without_strict_lab_provenance_preserves_existing_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            sentinel = processed_episode / "sentinel.txt"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode, strict_lab_provenance=False)
+            processed_episode.mkdir(parents=True)
+            sentinel.write_text("keep\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "strict lab provenance"):
+                convert_raw_real_to_processed(raw_episode, processed_episode, overwrite=True)
+
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
+
+
+    def test_substring_synthetic_collection_method_fails_before_output_creation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(
+                raw_episode,
+                convention=None,
+                collection_method="non_synthetic_lab_capture",
+            )
+
+            with self.assertRaisesRegex(ValueError, "tcp_orientation_convention"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            self.assertFalse(processed_episode.exists())
+
+    def test_substring_synthetic_collection_method_preserves_existing_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            sentinel = processed_episode / "sentinel.txt"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(
+                raw_episode,
+                convention=None,
+                collection_method="non_synthetic_lab_capture",
+            )
+            processed_episode.mkdir(parents=True)
+            sentinel.write_text("keep\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "tcp_orientation_convention"):
+                convert_raw_real_to_processed(raw_episode, processed_episode, overwrite=True)
+
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
+
+
+    def test_non_synthetic_doosan_euler_convention_fails_before_output_creation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode, convention="doosan_posx_euler_zyz_degrees")
+
+            with self.assertRaises(ValueError) as context:
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            message = str(context.exception)
+            self.assertIn("recognized but unsupported for conversion", message)
+            self.assertIn("Doosan native Euler ZYZ", message)
+            self.assertNotIn("produced invalid quaternion", message)
+            self.assertFalse(processed_episode.exists())
+
+    def test_non_synthetic_doosan_euler_convention_preserves_existing_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            sentinel = processed_episode / "sentinel.txt"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode, convention="euler_zyz_degrees")
+            processed_episode.mkdir(parents=True)
+            sentinel.write_text("keep\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "recognized but unsupported"):
+                convert_raw_real_to_processed(raw_episode, processed_episode, overwrite=True)
+
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
+
+
+    def test_camera_source_stamp_offset_above_half_frame_fails_before_output_creation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4, fps=30.0)
+            _mark_non_synthetic(raw_episode)
+            _shift_camera_source_stamps(raw_episode, 0.05)
+
+            with self.assertRaisesRegex(ValueError, "allowed camera/robot source_stamp offset is 0.016667s"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            self.assertFalse(processed_episode.exists())
 
     def test_non_synthetic_missing_robot_units_is_blocked_before_conversion(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -352,12 +736,140 @@ class RawRealToProcessedTests(unittest.TestCase):
                 convert_raw_real_to_processed(raw_episode, processed_episode)
             self.assertFalse(processed_episode.exists())
 
-    def test_non_synthetic_valid_explicit_units_and_convention_convert(self):
+    def test_non_synthetic_corrupt_camera_image_fails_before_output_creation(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             raw_episode = root / "raw_real" / "episode_000000"
             processed_episode = root / "processed" / "episode_000000"
             make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode)
+            (raw_episode / "streams" / "external_camera" / "frames" / "000000.ppm").write_bytes(b"not an image")
+
+            with self.assertRaisesRegex(ValueError, "not decodable"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            self.assertFalse(processed_episode.exists())
+
+    def test_non_synthetic_corrupt_camera_image_preserves_existing_output_with_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode)
+            (raw_episode / "streams" / "external_camera" / "frames" / "000000.ppm").write_bytes(b"not an image")
+            processed_episode.mkdir(parents=True)
+            sentinel = processed_episode / "sentinel.txt"
+            sentinel.write_text("keep\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "not decodable"):
+                convert_raw_real_to_processed(raw_episode, processed_episode, overwrite=True)
+
+            self.assertTrue(sentinel.is_file())
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
+
+    def test_non_synthetic_missing_calibration_ref_fails_before_output_creation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode)
+            calibration_path = raw_episode / "calibration_refs.json"
+            calibration_refs = _read_json(calibration_path)
+            del calibration_refs["force_torque_calibration"]
+            _write_json(calibration_path, calibration_refs)
+
+            with self.assertRaisesRegex(ValueError, "calibration_refs.force_torque_calibration is required"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            self.assertFalse(processed_episode.exists())
+
+    def test_non_synthetic_missing_calibration_ref_preserves_existing_output_with_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode)
+            calibration_path = raw_episode / "calibration_refs.json"
+            calibration_refs = _read_json(calibration_path)
+            del calibration_refs["force_torque_calibration"]
+            _write_json(calibration_path, calibration_refs)
+            processed_episode.mkdir(parents=True)
+            sentinel = processed_episode / "sentinel.txt"
+            sentinel.write_text("keep\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "calibration_refs.force_torque_calibration is required"):
+                convert_raw_real_to_processed(raw_episode, processed_episode, overwrite=True)
+
+            self.assertTrue(sentinel.is_file())
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
+
+
+    def test_non_synthetic_missing_gripper_state_fails_before_output_creation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4, include_optional_streams=False)
+            _mark_non_synthetic(raw_episode)
+
+            with self.assertRaisesRegex(ValueError, "gripper_state is required for non-synthetic conversion"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            self.assertFalse(processed_episode.exists())
+
+    def test_non_synthetic_missing_gripper_state_preserves_existing_output_with_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4, include_optional_streams=False)
+            _mark_non_synthetic(raw_episode)
+            processed_episode.mkdir(parents=True)
+            sentinel = processed_episode / "sentinel.txt"
+            sentinel.write_text("keep\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "gripper_state is required for non-synthetic conversion"):
+                convert_raw_real_to_processed(raw_episode, processed_episode, overwrite=True)
+
+            self.assertTrue(sentinel.is_file())
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
+
+    def test_non_synthetic_valid_gripper_records_are_used_instead_of_zero_fallback(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4, include_optional_streams=True)
+            _mark_non_synthetic(raw_episode, convention="rotation_vector_degrees")
+            gripper_path = raw_episode / "streams" / "gripper_state.jsonl"
+            gripper_records = _read_jsonl(gripper_path)
+            for idx, record in enumerate(gripper_records):
+                record["gripper_position"] = 0.20 + 0.01 * idx
+                record.pop("gripper_width_m", None)
+            _write_jsonl(gripper_path, gripper_records)
+
+            convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            frames = _read_jsonl(processed_episode / "frames.jsonl")
+            metadata = _read_json(processed_episode / "metadata_processed.json")
+            self.assertEqual(
+                metadata["selected_streams"]["gripper_state"],
+                "record_index aligned measured gripper_state stream",
+            )
+            for idx, frame in enumerate(frames):
+                self.assertAlmostEqual(frame["model_state"][6], 0.20 + 0.01 * idx)
+            for frame in frames[:-1]:
+                self.assertAlmostEqual(frame["measured_action"][6], 0.01)
+
+    def test_non_synthetic_valid_explicit_units_and_convention_convert(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4, include_optional_streams=True)
             _mark_non_synthetic(raw_episode, convention="rotation_vector_degrees")
 
             validation = validate_raw_real_episode(raw_episode)
@@ -374,7 +886,7 @@ class RawRealToProcessedTests(unittest.TestCase):
             root = Path(tmpdir)
             raw_episode = root / "raw_real" / "episode_000000"
             processed_episode = root / "processed" / "episode_000000"
-            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4, include_optional_streams=True)
             _mark_non_synthetic(raw_episode, convention="rotation_vector_degrees")
 
             robot_path = raw_episode / "streams" / "robot_state_rt.jsonl"

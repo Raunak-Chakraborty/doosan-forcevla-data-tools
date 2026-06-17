@@ -45,6 +45,33 @@ CONVERTER_ALIGNED_OPTIONAL_STREAMS = ["gripper_state"]
 ROTATION_VECTOR_DEGREES = "rotation_vector_degrees"
 ROTATION_VECTOR_RADIANS = "rotation_vector_radians"
 
+CAMERA_ROBOT_SOURCE_STAMP_TOLERANCE_FPS_FRACTION = 0.5
+CAMERA_ROBOT_SOURCE_STAMP_FALLBACK_TOLERANCE_SEC = 0.02
+CAMERA_ROBOT_SOURCE_STAMP_OVERRIDE_KEY = "max_camera_robot_source_stamp_offset_sec"
+CAMERA_ROBOT_SOURCE_STAMP_MAX_OVERRIDE_SEC = 0.1
+CAMERA_ROBOT_SOURCE_STAMP_MAX_OVERRIDE_FRAME_FRACTION = 2.0
+
+SUPPORTED_TCP_ORIENTATION_CONVENTIONS = {ROTATION_VECTOR_DEGREES, ROTATION_VECTOR_RADIANS}
+UNSUPPORTED_TCP_ORIENTATION_CONVENTIONS = {
+    "doosan_posx_euler_zyz_degrees",
+    "doosan_robotstate_actual_tcp_position_euler_zyz_degrees",
+    "euler_zyz_degrees",
+}
+EXPLICIT_SYNTHETIC_COLLECTION_METHODS = {"synthetic_raw_real", "synthetic_raw_real_fixture"}
+EXPLICIT_SYNTHETIC_RECORDER_VERSIONS = {"synthetic_raw_real_generator_v0"}
+SOURCE_STAMP_SECONDS_UNIT = "seconds"
+
+WRENCH_MODEL_STATE_ORDER = ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"]
+WRENCH_FORCE_UNIT = "N"
+WRENCH_TORQUE_UNIT = "Nm"
+SUPPORTED_WRENCH_FRAMES = {"base", "flange"}
+SUPPORTED_WRENCH_COMPENSATION = {
+    "estimated_external_tcp_force",
+    "raw_flange_sensor",
+    "gravity_compensated",
+    "not_gravity_compensated",
+}
+
 STRICT_LAB_PROVENANCE_KEYS = [
     "exact_doosan_namespace",
     "external_camera_topic",
@@ -86,6 +113,16 @@ SUPPORTED_JOINT_VELOCITY_UNITS = {
 DEGREE_UNITS = {"deg", "degree", "degrees"}
 RADIAN_UNITS = {"rad", "radian", "radians"}
 
+CALIBRATION_REF_ID_KEYS = ("id", "calibration_id", "reference_id", "ref", "reference", "name")
+REQUIRED_CALIBRATION_REF_PATHS = [
+    ("camera_intrinsics.external_camera", ("camera_intrinsics", "external_camera")),
+    ("camera_extrinsics.external_camera", ("camera_extrinsics", "external_camera")),
+    ("camera_intrinsics.wrist_camera", ("camera_intrinsics", "wrist_camera")),
+    ("camera_extrinsics.wrist_camera", ("camera_extrinsics", "wrist_camera")),
+    ("tcp_tool_calibration", ("tcp_tool_calibration",)),
+    ("force_torque_calibration", ("force_torque_calibration",)),
+]
+
 
 def _is_non_empty_string(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
@@ -94,6 +131,13 @@ def _is_non_empty_string(value: Any) -> bool:
 def _is_finite_number(value: Any) -> bool:
     return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(float(value))
 
+
+
+def _positive_fps(metadata: dict[str, Any] | None) -> float | None:
+    fps = metadata.get("fps") if isinstance(metadata, dict) else None
+    if _is_finite_number(fps) and float(fps) > 0.0:
+        return float(fps)
+    return None
 
 def _is_non_negative_int(value: Any) -> bool:
     return not isinstance(value, bool) and isinstance(value, int) and value >= 0
@@ -131,7 +175,8 @@ def _combined_units(record: dict[str, Any] | None, stream_entry: dict[str, Any] 
     return units
 
 
-def _is_synthetic_episode(
+
+def is_explicit_synthetic_episode(
     metadata: dict[str, Any] | None,
     recorder_report: dict[str, Any] | None,
     streams_index: dict[str, Any] | None,
@@ -140,13 +185,13 @@ def _is_synthetic_episode(
     recorder_version = metadata.get("recorder_version") if isinstance(metadata, dict) else None
     return any(
         [
-            isinstance(collection_method, str) and "synthetic" in collection_method.lower(),
-            isinstance(recorder_version, str) and "synthetic" in recorder_version.lower(),
+            isinstance(metadata, dict) and metadata.get("synthetic") is True,
+            collection_method in EXPLICIT_SYNTHETIC_COLLECTION_METHODS,
+            recorder_version in EXPLICIT_SYNTHETIC_RECORDER_VERSIONS,
             isinstance(recorder_report, dict) and recorder_report.get("synthetic") is True,
             isinstance(streams_index, dict) and streams_index.get("synthetic") is True,
         ]
     )
-
 
 def _tcp_orientation_convention(
     metadata: dict[str, Any] | None,
@@ -158,6 +203,36 @@ def _tcp_orientation_convention(
         return recorder_report.get("tcp_orientation_convention")
     return None
 
+
+
+def _quoted_values(values: set[str]) -> str:
+    return ", ".join(f"'{value}'" for value in sorted(values))
+
+
+def tcp_orientation_convention_readiness_error(convention: Any) -> str | None:
+    supported = _quoted_values(SUPPORTED_TCP_ORIENTATION_CONVENTIONS)
+    unsupported = _quoted_values(UNSUPPORTED_TCP_ORIENTATION_CONVENTIONS)
+    if convention in SUPPORTED_TCP_ORIENTATION_CONVENTIONS:
+        return None
+    if convention in UNSUPPORTED_TCP_ORIENTATION_CONVENTIONS:
+        return (
+            "metadata/recorder_report: tcp_orientation_convention "
+            f"{convention!r} is recognized but unsupported for conversion; "
+            "Doosan native Euler ZYZ must be live-verified and converted before use. "
+            f"Supported conversion conventions: {supported}"
+        )
+    if convention is None:
+        return (
+            "metadata/recorder_report: tcp_orientation_convention must be one of "
+            f"{supported} for non-synthetic conversion; "
+            "tcp_orientation_convention_verified alone is not sufficient. "
+            f"Recognized but unsupported Doosan/native conventions: {unsupported}"
+        )
+    return (
+        "metadata/recorder_report: unknown tcp_orientation_convention "
+        f"{convention!r}; supported conversion conventions: {supported}; "
+        f"recognized but unsupported Doosan/native conventions: {unsupported}"
+    )
 
 def _supported_unit_error(
     units: dict[str, Any],
@@ -214,9 +289,15 @@ def _strict_lab_provenance_errors(
     recorder_report: dict[str, Any] | None,
     streams: dict[str, Any] | None,
     records_by_stream: dict[str, list[dict[str, Any]]],
+    *,
+    root_dir: str | Path | None = None,
+    calibration_refs: dict[str, Any] | None = None,
 ) -> list[str]:
     if not _strict_lab_provenance_required(metadata, recorder_report):
-        return []
+        return [
+            "non-synthetic raw-real conversion requires strict lab provenance; "
+            "set lab_provenance_required=true or strict_lab_provenance=true and provide verified lab provenance"
+        ]
 
     errors: list[str] = []
     metadata_dict = metadata if isinstance(metadata, dict) else {}
@@ -258,6 +339,233 @@ def _strict_lab_provenance_errors(
 
     return errors
 
+
+
+
+def _declared_image_shape_text(record: dict[str, Any]) -> str:
+    return f"{record.get('width')!r}x{record.get('height')!r}x{record.get('channels')!r}"
+
+
+def _decoded_image_shape_text(shape: tuple[int, int, int]) -> str:
+    width, height, channels = shape
+    return f"{width}x{height}x{channels}"
+
+
+def _decode_image_shape(path: Path) -> tuple[int, int, int] | str:
+    try:
+        from PIL import Image
+    except ImportError:
+        return "Pillow/PIL is not available; install Pillow to verify non-synthetic camera images"
+
+    try:
+        with Image.open(path) as image:
+            image.load()
+            width, height = image.size
+            channels = len(image.getbands())
+    except Exception as exc:
+        return f"Pillow/PIL could not decode image: {exc}"
+
+    return int(width), int(height), int(channels)
+
+
+def _camera_image_decodability_errors(root: Path, records_by_stream: dict[str, list[dict[str, Any]]]) -> list[str]:
+    errors: list[str] = []
+    for stream_name in sorted(CAMERA_STREAM_NAMES):
+        for idx, record in enumerate(records_by_stream.get(stream_name, [])):
+            image_path_value = record.get("image_path")
+            if not isinstance(image_path_value, str) or not image_path_value:
+                continue
+            image_relative = Path(image_path_value)
+            if image_relative.is_absolute() or ".." in image_relative.parts:
+                continue
+            image_path = root / image_relative
+            if not _is_path_under_root(root, image_path) or not image_path.is_file():
+                continue
+            try:
+                if image_path.stat().st_size <= 0:
+                    continue
+            except OSError:
+                continue
+
+            declared_shape = _declared_image_shape_text(record)
+            decoded = _decode_image_shape(image_path)
+            if isinstance(decoded, str):
+                errors.append(
+                    f"{stream_name} camera record {idx}: image_path {image_path_value} is not decodable "
+                    f"for non-synthetic conversion (declared {declared_shape}; resolved {image_path}): {decoded}"
+                )
+                continue
+
+            if not all(_is_positive_int(record.get(key)) for key in ["width", "height", "channels"]):
+                continue
+            expected = (int(record["width"]), int(record["height"]), int(record["channels"]))
+            if decoded != expected:
+                errors.append(
+                    f"{stream_name} camera record {idx}: decoded image dimensions do not match declared metadata "
+                    f"for image_path {image_path_value}: declared {declared_shape}, "
+                    f"decoded {_decoded_image_shape_text(decoded)} (resolved {image_path})"
+                )
+    return errors
+
+
+def _nested_value(data: dict[str, Any], path: tuple[str, ...]) -> tuple[bool, Any]:
+    current: Any = data
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            return False, None
+        current = current[key]
+    return True, current
+
+
+def _is_meaningful_calibration_ref(value: Any) -> bool:
+    if isinstance(value, str):
+        return not _is_unknown_provenance_value(value)
+    if isinstance(value, dict):
+        if not value:
+            return False
+        return any(_is_meaningful_calibration_ref(value.get(key)) for key in CALIBRATION_REF_ID_KEYS if key in value)
+    return False
+
+
+def _calibration_refs_readiness_errors(calibration_refs: dict[str, Any] | None) -> list[str]:
+    if not isinstance(calibration_refs, dict):
+        return ["calibration_refs: must be a JSON object for non-synthetic conversion"]
+
+    errors: list[str] = []
+    for display_path, path in REQUIRED_CALIBRATION_REF_PATHS:
+        exists, value = _nested_value(calibration_refs, path)
+        if not exists:
+            errors.append(f"calibration_refs.{display_path} is required for non-synthetic conversion")
+        elif not _is_meaningful_calibration_ref(value):
+            errors.append(
+                f"calibration_refs.{display_path} must be a non-empty known calibration reference "
+                "for non-synthetic conversion"
+            )
+    return errors
+
+def _selected_wrench_source(record: dict[str, Any]) -> str | None:
+    if _is_numeric_list(record.get("external_tcp_force"), 6):
+        return "external_tcp_force"
+    if _is_numeric_list(record.get("raw_force_torque"), 6):
+        return "raw_force_torque"
+    return None
+
+
+def selected_wrench_sources_for_model_state(records_by_stream: dict[str, list[dict[str, Any]]]) -> list[str]:
+    selected: list[str] = []
+    seen: set[str] = set()
+    for record in records_by_stream.get("robot_state_rt", []):
+        source = _selected_wrench_source(record)
+        if source is not None and source not in seen:
+            selected.append(source)
+            seen.add(source)
+    return selected
+
+
+def _robot_state_wrench_sources_metadata(streams: dict[str, Any] | None) -> Any:
+    if not isinstance(streams, dict):
+        return None
+    robot_entry = streams.get("robot_state_rt")
+    if not isinstance(robot_entry, dict):
+        return None
+    return robot_entry.get("wrench_sources")
+
+
+def _validated_wrench_metadata(source: str, metadata: dict[str, Any], errors: list[str]) -> dict[str, Any] | None:
+    valid = True
+    context = f"wrench metadata: selected source {source}"
+
+    order = metadata.get("order")
+    if order != WRENCH_MODEL_STATE_ORDER:
+        errors.append(f"{context} order must be {WRENCH_MODEL_STATE_ORDER!r}; got {order!r}")
+        valid = False
+
+    force_unit = metadata.get("force_unit")
+    if force_unit != WRENCH_FORCE_UNIT:
+        errors.append(f"{context} force_unit must be 'N'; got {force_unit!r}")
+        valid = False
+
+    torque_unit = metadata.get("torque_unit")
+    if torque_unit != WRENCH_TORQUE_UNIT:
+        errors.append(f"{context} torque_unit must be 'Nm'; got {torque_unit!r}")
+        valid = False
+
+    frame = metadata.get("frame")
+    if frame not in SUPPORTED_WRENCH_FRAMES:
+        errors.append(f"{context} frame must be one of {sorted(SUPPORTED_WRENCH_FRAMES)!r}; got {frame!r}")
+        valid = False
+
+    compensation = metadata.get("compensation")
+    if compensation not in SUPPORTED_WRENCH_COMPENSATION:
+        errors.append(
+            f"{context} compensation must be one of {sorted(SUPPORTED_WRENCH_COMPENSATION)!r}; "
+            f"got {compensation!r}"
+        )
+        valid = False
+
+    approved = metadata.get("approved_for_model_state")
+    if approved is not True:
+        errors.append(f"{context} approved_for_model_state must be true; got {approved!r}")
+        valid = False
+
+    if not valid:
+        return None
+    return {
+        "order": list(WRENCH_MODEL_STATE_ORDER),
+        "force_unit": force_unit,
+        "torque_unit": torque_unit,
+        "frame": frame,
+        "compensation": compensation,
+        "approved_for_model_state": True,
+    }
+
+
+def selected_wrench_metadata_for_model_state(
+    streams: dict[str, Any] | None,
+    records_by_stream: dict[str, list[dict[str, Any]]],
+) -> dict[str, dict[str, Any]]:
+    selected_sources = selected_wrench_sources_for_model_state(records_by_stream)
+    wrench_sources = _robot_state_wrench_sources_metadata(streams)
+    if not isinstance(wrench_sources, dict):
+        return {}
+
+    selected_metadata: dict[str, dict[str, Any]] = {}
+    for source in selected_sources:
+        metadata = wrench_sources.get(source)
+        errors: list[str] = []
+        if isinstance(metadata, dict):
+            validated = _validated_wrench_metadata(source, metadata, errors)
+            if validated is not None:
+                selected_metadata[source] = validated
+    return selected_metadata
+
+
+def _wrench_metadata_errors(
+    streams: dict[str, Any] | None,
+    records_by_stream: dict[str, list[dict[str, Any]]],
+) -> list[str]:
+    selected_sources = selected_wrench_sources_for_model_state(records_by_stream)
+    if not selected_sources:
+        return []
+
+    errors: list[str] = []
+    wrench_sources = _robot_state_wrench_sources_metadata(streams)
+    if not isinstance(wrench_sources, dict):
+        return [
+            "wrench metadata: streams/index.json streams.robot_state_rt.wrench_sources "
+            "must be a JSON object for non-synthetic conversion"
+        ]
+
+    for source in selected_sources:
+        metadata = wrench_sources.get(source)
+        if not isinstance(metadata, dict):
+            errors.append(
+                f"wrench metadata: selected source {source} must have metadata at "
+                f"streams/index.json streams.robot_state_rt.wrench_sources.{source}"
+            )
+            continue
+        _validated_wrench_metadata(source, metadata, errors)
+    return errors
 
 def _read_json_object(path: Path, errors: list[str], label: str) -> dict[str, Any] | None:
     try:
@@ -352,6 +660,31 @@ def _source_stamp_seconds(value: Any) -> float | None:
     if not 0.0 <= float(nanosec) < 1_000_000_000.0:
         return None
     return float(sec) + float(nanosec) * 1e-9
+
+
+def _required_streams_use_numeric_source_stamp(records_by_stream: dict[str, list[dict[str, Any]]]) -> bool:
+    for stream_name in REQUIRED_STREAM_NAMES:
+        for record in records_by_stream.get(stream_name, []):
+            if _is_finite_number(record.get("source_stamp")):
+                return True
+    return False
+
+
+def _numeric_source_stamp_timebase_errors(
+    streams_index: dict[str, Any] | None,
+    records_by_stream: dict[str, list[dict[str, Any]]],
+) -> list[str]:
+    if not _required_streams_use_numeric_source_stamp(records_by_stream):
+        return []
+
+    timebase = streams_index.get("timebase") if isinstance(streams_index, dict) else None
+    source_stamp_unit = timebase.get("source_stamp_unit") if isinstance(timebase, dict) else None
+    if source_stamp_unit == SOURCE_STAMP_SECONDS_UNIT:
+        return []
+    return [
+        "source_stamp unit/timebase: streams/index.json timebase.source_stamp_unit must be "
+        f"'seconds' for non-synthetic numeric source_stamp values; got {source_stamp_unit!r}"
+    ]
 
 
 def _validate_common_record_fields(
@@ -818,24 +1151,96 @@ def _records_by_index(records: list[dict[str, Any]]) -> dict[int, dict[str, Any]
     return indexed
 
 
-def timestamp_tolerance_seconds(metadata: dict[str, Any] | None) -> float:
-    if metadata is not None:
-        fps = metadata.get("fps")
-        if _is_finite_number(fps) and float(fps) > 0.0:
-            return max(0.1, 2.0 / float(fps))
-    return 0.1
+
+
+def _has_finite_gripper_value(record: dict[str, Any]) -> bool:
+    return _is_finite_number(record.get("gripper_position")) or _is_finite_number(record.get("gripper_width_m"))
+
+def _default_camera_robot_source_stamp_tolerance(metadata: dict[str, Any] | None) -> tuple[float, str]:
+    fps = _positive_fps(metadata)
+    if fps is None:
+        return (
+            CAMERA_ROBOT_SOURCE_STAMP_FALLBACK_TOLERANCE_SEC,
+            "default fallback because metadata.fps is missing or invalid",
+        )
+    tolerance = CAMERA_ROBOT_SOURCE_STAMP_TOLERANCE_FPS_FRACTION / fps
+    return tolerance, f"default {CAMERA_ROBOT_SOURCE_STAMP_TOLERANCE_FPS_FRACTION:g}/fps from metadata.fps={fps:g}"
+
+
+def _max_camera_robot_source_stamp_override(metadata: dict[str, Any] | None) -> tuple[float, str]:
+    fps = _positive_fps(metadata)
+    if fps is None:
+        return CAMERA_ROBOT_SOURCE_STAMP_MAX_OVERRIDE_SEC, "absolute maximum without valid metadata.fps"
+    max_by_fps = CAMERA_ROBOT_SOURCE_STAMP_MAX_OVERRIDE_FRAME_FRACTION / fps
+    return (
+        min(CAMERA_ROBOT_SOURCE_STAMP_MAX_OVERRIDE_SEC, max_by_fps),
+        f"min({CAMERA_ROBOT_SOURCE_STAMP_MAX_OVERRIDE_SEC:g}, "
+        f"{CAMERA_ROBOT_SOURCE_STAMP_MAX_OVERRIDE_FRAME_FRACTION:g}/fps) for metadata.fps={fps:g}",
+    )
+
+
+def _camera_robot_source_stamp_tolerance_policy(
+    metadata: dict[str, Any] | None,
+    streams_index: dict[str, Any] | None,
+) -> tuple[float, str, list[str], list[str]]:
+    default_tolerance, default_source = _default_camera_robot_source_stamp_tolerance(metadata)
+    if not isinstance(streams_index, dict):
+        return default_tolerance, default_source, [], []
+
+    timebase = streams_index.get("timebase")
+    if not isinstance(timebase, dict) or CAMERA_ROBOT_SOURCE_STAMP_OVERRIDE_KEY not in timebase:
+        return default_tolerance, default_source, [], []
+
+    override = timebase.get(CAMERA_ROBOT_SOURCE_STAMP_OVERRIDE_KEY)
+    override_path = f"streams/index.json timebase.{CAMERA_ROBOT_SOURCE_STAMP_OVERRIDE_KEY}"
+    if not _is_finite_number(override) or float(override) <= 0.0:
+        return (
+            default_tolerance,
+            default_source,
+            [f"{override_path} must be a finite positive number of seconds; got {override!r}"],
+            [],
+        )
+
+    max_override, max_source = _max_camera_robot_source_stamp_override(metadata)
+    override_seconds = float(override)
+    if override_seconds > max_override:
+        return (
+            default_tolerance,
+            default_source,
+            [
+                f"{override_path}={override_seconds:.6f}s exceeds allowed maximum "
+                f"{max_override:.6f}s ({max_source})"
+            ],
+            [],
+        )
+
+    warnings: list[str] = []
+    if override_seconds > default_tolerance:
+        warnings.append(
+            f"{override_path}={override_seconds:.6f}s exceeds default camera/robot source_stamp "
+            f"tolerance {default_tolerance:.6f}s ({default_source}); use only with documented clock-offset review"
+        )
+    return override_seconds, f"explicit {override_path}", [], warnings
+
+
+def timestamp_tolerance_seconds(
+    metadata: dict[str, Any] | None,
+    streams_index: dict[str, Any] | None = None,
+) -> float:
+    tolerance, _, _, _ = _camera_robot_source_stamp_tolerance_policy(metadata, streams_index)
+    return tolerance
 
 
 def _source_stamp_alignment_errors(
     records_by_stream: dict[str, list[dict[str, Any]]],
     metadata: dict[str, Any] | None,
+    streams_index: dict[str, Any] | None,
 ) -> list[str]:
+    tolerance, tolerance_source, errors, _ = _camera_robot_source_stamp_tolerance_policy(metadata, streams_index)
     robot_by_index = _records_by_index(records_by_stream.get("robot_state_rt", []))
     if not robot_by_index:
-        return []
+        return errors
 
-    errors: list[str] = []
-    tolerance = timestamp_tolerance_seconds(metadata)
     for stream_name in ["external_camera", "wrist_camera"]:
         stream_by_index = _records_by_index(records_by_stream.get(stream_name, []))
         common_indexes = sorted(set(robot_by_index) & set(stream_by_index))
@@ -844,15 +1249,48 @@ def _source_stamp_alignment_errors(
             stream_stamp = _source_stamp_seconds(stream_by_index[record_index].get("source_stamp"))
             if robot_stamp is None or stream_stamp is None:
                 continue
-            if abs(stream_stamp - robot_stamp) > tolerance:
+            offset = abs(stream_stamp - robot_stamp)
+            if offset > tolerance:
                 errors.append(
-                    f"{stream_name}: source_stamp differs from robot_state_rt by more than "
-                    f"{tolerance:.3f}s at record_index {record_index}; raw_real_v0 conversion requires "
-                    "aligned episode-level record_index values"
+                    f"{stream_name}: source_stamp differs from robot_state_rt by {offset:.6f}s "
+                    f"at record_index {record_index}; allowed camera/robot source_stamp offset is "
+                    f"{tolerance:.6f}s ({tolerance_source}); raw_real_v0 conversion pairs records "
+                    "by aligned episode-level record_index values"
                 )
                 break
     return errors
 
+
+def _gripper_state_readiness_errors(records_by_stream: dict[str, list[dict[str, Any]]]) -> list[str]:
+    robot_indexes = _record_index_set(records_by_stream.get("robot_state_rt", []))
+    if not robot_indexes:
+        return []
+
+    gripper_records = records_by_stream.get("gripper_state", [])
+    if not gripper_records:
+        return [
+            "gripper_state is required for non-synthetic conversion; missing gripper state would otherwise "
+            "be silently zero-filled as gripper_pos=0.0"
+        ]
+
+    errors: list[str] = []
+    gripper_by_index = _records_by_index(gripper_records)
+    gripper_indexes = set(gripper_by_index)
+    if gripper_indexes != robot_indexes:
+        errors.append(
+            "gripper_state must contain one aligned record for every robot_state_rt record_index for "
+            f"non-synthetic conversion; {_alignment_details(robot_indexes, gripper_indexes)}; "
+            "silent gripper_pos=0.0 fallback is not allowed"
+        )
+
+    for record_index in sorted(robot_indexes & gripper_indexes):
+        if not _has_finite_gripper_value(gripper_by_index[record_index]):
+            errors.append(
+                f"gripper_state record_index {record_index}: non-synthetic conversion requires finite "
+                "gripper_position or gripper_width_m; silent gripper_pos=0.0 fallback is not allowed"
+            )
+
+    return errors
 
 def raw_real_conversion_readiness_errors(
     metadata: dict[str, Any] | None,
@@ -860,24 +1298,35 @@ def raw_real_conversion_readiness_errors(
     streams_index: dict[str, Any] | None,
     streams: dict[str, Any] | None,
     records_by_stream: dict[str, list[dict[str, Any]]],
+    *,
+    root_dir: str | Path | None = None,
+    calibration_refs: dict[str, Any] | None = None,
 ) -> list[str]:
     """Return validator errors for raw_real_v0 data the converter would reject."""
 
-    errors = _source_stamp_alignment_errors(records_by_stream, metadata)
-    if _is_synthetic_episode(metadata, recorder_report, streams_index):
+    errors = _source_stamp_alignment_errors(records_by_stream, metadata, streams_index)
+    if is_explicit_synthetic_episode(metadata, recorder_report, streams_index):
         return errors
+
+    if root_dir is None:
+        errors.append("raw-real episode root is required to verify non-synthetic camera image decodability")
+    else:
+        errors.extend(_camera_image_decodability_errors(Path(root_dir), records_by_stream))
+
+    errors.extend(_calibration_refs_readiness_errors(calibration_refs))
     if not isinstance(streams, dict):
         return errors
 
+    errors.extend(_numeric_source_stamp_timebase_errors(streams_index, records_by_stream))
+    errors.extend(_gripper_state_readiness_errors(records_by_stream))
+
     convention = _tcp_orientation_convention(metadata, recorder_report)
-    if convention not in {ROTATION_VECTOR_DEGREES, ROTATION_VECTOR_RADIANS}:
-        errors.append(
-            "metadata/recorder_report: tcp_orientation_convention must be one of "
-            "'rotation_vector_degrees' or 'rotation_vector_radians' for non-synthetic conversion; "
-            "tcp_orientation_convention_verified alone is not sufficient"
-        )
+    convention_error = tcp_orientation_convention_readiness_error(convention)
+    if convention_error is not None:
+        errors.append(convention_error)
 
     errors.extend(_strict_lab_provenance_errors(metadata, recorder_report, streams, records_by_stream))
+    errors.extend(_wrench_metadata_errors(streams, records_by_stream))
 
     robot_entry = streams.get("robot_state_rt") if isinstance(streams.get("robot_state_rt"), dict) else {}
     joint_entry = streams.get("joint_states") if isinstance(streams.get("joint_states"), dict) else {}
@@ -969,40 +1418,43 @@ def raw_real_conversion_readiness_errors(
     return errors
 
 
+
 def _warn_timestamp_mismatches(
     records_by_stream: dict[str, list[dict[str, Any]]],
     metadata: dict[str, Any] | None,
+    streams_index: dict[str, Any] | None,
     warnings: list[str],
 ) -> None:
     robot_by_index = _records_by_index(records_by_stream.get("robot_state_rt", []))
     if not robot_by_index:
         return
-    tolerance = timestamp_tolerance_seconds(metadata)
+    tolerance, tolerance_source, _, tolerance_warnings = _camera_robot_source_stamp_tolerance_policy(metadata, streams_index)
+    warnings.extend(tolerance_warnings)
 
     for stream_name in [
         "joint_states",
         "external_camera",
         "wrist_camera",
         "gripper_state",
-        "command_context",
     ]:
-        if stream_name not in records_by_stream:
-            continue
-        stream_by_index = _records_by_index(records_by_stream[stream_name])
+        stream_by_index = _records_by_index(records_by_stream.get(stream_name, []))
         common_indexes = sorted(set(robot_by_index) & set(stream_by_index))
-        for stamp_key in ["receipt_stamp", "monotonic_stamp"]:
-            for record_index in common_indexes:
-                robot_stamp = robot_by_index[record_index].get(stamp_key)
-                stream_stamp = stream_by_index[record_index].get(stamp_key)
+        for record_index in common_indexes:
+            robot_record = robot_by_index[record_index]
+            stream_record = stream_by_index[record_index]
+            for stamp_key in ["source_stamp", "receipt_stamp"]:
+                robot_stamp = robot_record.get(stamp_key)
+                stream_stamp = stream_record.get(stamp_key)
                 if not _is_finite_number(robot_stamp) or not _is_finite_number(stream_stamp):
                     continue
-                if abs(float(stream_stamp) - float(robot_stamp)) > tolerance:
+                offset = abs(float(stream_stamp) - float(robot_stamp))
+                if offset > tolerance:
                     warnings.append(
-                        f"{stream_name}: {stamp_key} differs from robot_state_rt by more than "
-                        f"{tolerance:.3f}s at record_index {record_index}"
+                        f"{stream_name}: {stamp_key} differs from robot_state_rt by {offset:.6f}s "
+                        f"at record_index {record_index}; allowed timing offset is {tolerance:.6f}s "
+                        f"({tolerance_source})"
                     )
                     break
-
 
 def validate_raw_real_episode(root_dir: str | Path) -> ValidationResult:
     """Validate a raw real episode directory."""
@@ -1030,7 +1482,7 @@ def validate_raw_real_episode(root_dir: str | Path) -> ValidationResult:
     if metadata is not None:
         _check_metadata(metadata, metadata_path, errors)
 
-    _read_json_object(root / "calibration_refs.json", errors, "calibration_refs")
+    calibration_refs = _read_json_object(root / "calibration_refs.json", errors, "calibration_refs")
     recorder_report = _read_json_object(root / "recorder_report.json", errors, "recorder_report")
     events = _read_jsonl_objects(root / "events.jsonl", errors, "events")
     _validate_events(events, root / "events.jsonl", metadata, errors, warnings)
@@ -1111,9 +1563,11 @@ def validate_raw_real_episode(root_dir: str | Path) -> ValidationResult:
             streams_index,
             streams,
             records_by_stream,
+            root_dir=root,
+            calibration_refs=calibration_refs,
         )
     )
-    _warn_timestamp_mismatches(records_by_stream, metadata, warnings)
+    _warn_timestamp_mismatches(records_by_stream, metadata, streams_index, warnings)
 
     return ValidationResult(not errors, errors, warnings)
 

@@ -11,7 +11,22 @@ import sys
 from typing import Any
 
 
-DEPENDENCY_ORDER = ["python", "pyarrow", "pandas", "lerobot", "cv2", "imageio", "PIL", "ffmpeg"]
+DEPENDENCY_ORDER = [
+    "python",
+    "pyarrow",
+    "pandas",
+    "lerobot",
+    "cv2",
+    "imageio",
+    "imageio_ffmpeg",
+    "PIL",
+    "ffmpeg",
+]
+
+IMPLEMENTED_VIDEO_ENCODER_KEYS = ("imageio_ffmpeg", "imageio", "cv2")
+IMPLEMENTED_VIDEO_ENCODER_REQUIREMENT = (
+    "requires one implemented video encoder: imageio_ffmpeg, imageio, or cv2"
+)
 
 
 def _version_from_distribution(distribution_name: str) -> str | None:
@@ -78,6 +93,24 @@ def _check_ffmpeg() -> dict[str, object]:
     }
 
 
+def _check_imageio_ffmpeg() -> dict[str, object]:
+    try:
+        imageio_ffmpeg = importlib.import_module("imageio_ffmpeg")
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception as exc:
+        return {
+            "available": False,
+            "version": None,
+            "detail": f"not importable or get_ffmpeg_exe failed on this environment: {exc}",
+        }
+
+    return {
+        "available": True,
+        "version": _version_from_module(imageio_ffmpeg, "imageio-ffmpeg"),
+        "detail": f"imageio_ffmpeg.get_ffmpeg_exe returned {ffmpeg_exe}",
+    }
+
+
 def check_export_dependencies() -> dict[str, dict[str, object]]:
     """Return availability details for optional real-export dependencies."""
 
@@ -88,9 +121,19 @@ def check_export_dependencies() -> dict[str, dict[str, object]]:
         "lerobot": _check_importable("lerobot"),
         "cv2": _check_importable("cv2", "opencv-python"),
         "imageio": _check_importable("imageio"),
+        "imageio_ffmpeg": _check_imageio_ffmpeg(),
         "PIL": _check_importable("PIL", "Pillow"),
         "ffmpeg": _check_ffmpeg(),
     }
+
+
+def implemented_video_backend_ready(dependencies: dict[str, dict[str, object]]) -> bool:
+    """Return whether at least one implemented video encoder is available."""
+
+    return any(
+        isinstance(dependencies.get(key), dict) and dependencies[key].get("available") is True
+        for key in IMPLEMENTED_VIDEO_ENCODER_KEYS
+    )
 
 
 def _format_version(version: object) -> str:

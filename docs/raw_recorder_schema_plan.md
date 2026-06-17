@@ -176,7 +176,8 @@ Current `raw_real_v0` conversion alignment policy:
 - `source_stamp` remains the original sensor/source time and is used for synchronization diagnostics.
 - `receipt_stamp` and `monotonic_stamp` remain recorder/debug timing signals.
 - The current converter does not perform timestamp-based alignment, resampling, or interpolation.
-- Large cross-stream `source_stamp` offsets between robot_state_rt and required camera streams block conversion readiness unless a future schema introduces an explicit clock-offset model.
+- Large cross-stream `source_stamp` offsets between robot_state_rt and required camera streams block conversion readiness. The default allowed camera/robot offset is `0.5 / fps`, or `0.02` seconds when FPS is missing/invalid.
+- A narrowly bounded override can be declared at `streams/index.json.timebase.max_camera_robot_source_stamp_offset_sec`; it must be finite, positive, no greater than `2.0 / fps`, and no greater than `0.1` seconds. This is only an explicit tolerance override, not a timestamp unit or clock-offset model.
 - A future schema version may add timestamp-based alignment, but this current version intentionally requires aligned `record_index` values for converter-required streams.
 
 ## 4. Required Raw Fields
@@ -238,7 +239,7 @@ Required TCP pose fields:
 | Field | Requirement |
 | --- | --- |
 | `position` | TCP translation in raw units plus normalized target units. Doosan RT pose comments indicate millimeters; processed state should use meters. |
-| `orientation` | Raw representation as recorded plus normalized representation for conversion. Doosan RT comments indicate `[x, y, z, a, b, c]` with Euler angles in degrees, likely ZYZ per static report; processed path expects `xyzw` quaternion before rotation-vector conversion. |
+| `orientation` | Raw representation as recorded plus normalized representation for conversion. Doosan RT comments indicate `[x, y, z, a, b, c]` with Euler angles in degrees, likely ZYZ per static report; processed path expects `xyzw` quaternion before rotation-vector conversion. Do not label native Doosan Euler values as `rotation_vector_degrees` unless live verification proves that convention and a converter path supports it. |
 | `pose_frame` | Base/world/user coordinate frame for the TCP pose. |
 | `tcp_frame` | Active TCP/tool frame identifier. |
 | `source_name` | Exact `ReadDataRt`, `GetCurrentPosx`, or TF source. |
@@ -374,7 +375,7 @@ Offline computation requirements:
 | --- | --- |
 | Use measured TCP poses | Prefer `RobotStateRt.actual_tcp_position` or verified `GetCurrentPosx`/TF-derived measured TCP pose. |
 | Normalize units first | Convert raw Doosan TCP translations from millimeters to meters before computing deltas if the raw source uses millimeters. Convert raw degrees to radians before quaternion/rotation-vector calculations. |
-| Resolve orientation convention | The ROS report says Doosan task pose comments indicate `[x, y, z, a, b, c]`, mm/deg, likely Euler ZYZ. This must be verified before conversion to `xyzw` quaternion. |
+| Resolve orientation convention | The ROS report says Doosan task pose comments indicate `[x, y, z, a, b, c]`, mm/deg, likely Euler ZYZ. This must be verified before conversion to `xyzw` quaternion. Until then, use a blocking marker such as `doosan_posx_euler_zyz_degrees`, not `rotation_vector_degrees`. |
 | Choose frame explicitly | TCP deltas should be computed in the selected base/world/task frame consistently. Do not mix base, user, flange, or tool frames. |
 | Handle quaternion sign | Quaternions `q` and `-q` are equivalent; shortest-rotation handling should remain in the conversion path. |
 | Align frame pairs | Current `raw_real_v0` conversion uses the shared episode-level `record_index` as the aligned frame key. It does not timestamp-resample or interpolate streams. |
@@ -390,7 +391,7 @@ Validation should be layered so that raw capture problems are caught before proc
 | Raw episode structural validation | Confirm the real raw episode folder is well-formed. | Required files exist; stream manifests are readable; required streams are present; schema version is known; no empty required streams. |
 | Timestamp monotonicity | Confirm each stream can be ordered and aligned. | Sequential aligned `record_index`; monotonic `source_stamp` where expected; monotonic `receipt_stamp`; no negative episode-time values; report clock regressions. |
 | Stream completeness | Confirm required observation streams exist across the episode. | Joint state records, TCP pose records, wrench records, both camera streams, robot state, TF, metadata, events, and calibration refs have adequate coverage. |
-| Camera frame count and timestamp checks | Confirm image streams can be aligned to robot state. | Nonzero frame counts; image files/chunks exist; dimensions/encoding stable or documented; frame timestamps within tolerance of robot_state_rt by aligned `record_index`; dropped frame counts reported; external and wrist camera rates plausible. |
+| Camera frame count and timestamp checks | Confirm image streams can be aligned to robot state. | Nonzero frame counts; image files/chunks exist; dimensions/encoding stable or documented; camera `source_stamp` values within `0.5 / fps` of robot_state_rt by aligned `record_index` unless a bounded `streams/index.json.timebase.max_camera_robot_source_stamp_offset_sec` override is declared; dropped frame counts reported; external and wrist camera rates plausible. |
 | Robot state numeric sanity checks | Confirm numeric robot streams are usable. | Finite values; six joints; plausible joint positions/velocities; no impossible TCP jumps; wrench finite; robot mode/state/control mode present; units declared. |
 | TCP pose availability checks | Confirm action labels can be computed. | Consecutive TCP pose availability across processed timeline; orientation conversion possible; frame and TCP/tool metadata present; no missing pose pairs except terminal frame. |
 | Processed episode validation | Confirm raw-to-processed conversion output matches existing schema. | Current `validate_processed_episode` checks metadata, frames, timestamps, image paths, 25D model state, 7D action, terminal padding, and final zero action. |
@@ -667,7 +668,12 @@ raw_candidates:
     converter_supported_tcp_orientation_conventions:
       - rotation_vector_degrees
       - rotation_vector_radians
+    recognized_but_unsupported_tcp_orientation_conventions:
+      - doosan_posx_euler_zyz_degrees
+      - doosan_robotstate_actual_tcp_position_euler_zyz_degrees
+      - euler_zyz_degrees
     current_converter_rejects_unknown_euler_conventions: true
+    notes: Do not label native Doosan Euler pose values as rotation vectors unless live verification proves that convention and a converter path supports it.
     joint_position_units: degrees
     joint_velocity_units: degrees_per_second
     force_units: N
@@ -684,6 +690,10 @@ conversion_policy:
   record_index_policy: episode_level_aligned_sample_index_for_converter_streams
   timestamp_alignment: diagnostics_only_no_interpolation_in_raw_real_v0
   block_large_required_camera_source_stamp_offsets: true
+  default_camera_robot_source_stamp_offset_tolerance: 0.5 / fps
+  fallback_camera_robot_source_stamp_offset_tolerance_sec: 0.02
+  optional_timebase_override_key: max_camera_robot_source_stamp_offset_sec
+  max_camera_robot_source_stamp_offset_override: min(0.1, 2.0 / fps)
   command_streams_are_labels: false
   terminal_padding_action: [0, 0, 0, 0, 0, 0, 0]
 ```

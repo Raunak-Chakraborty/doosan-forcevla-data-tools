@@ -21,7 +21,9 @@ from doosan_forcevla_data.schema.raw_real_schema import (
 from doosan_forcevla_data.validate.validate_raw_real_episode import (
     ROTATION_VECTOR_DEGREES,
     ROTATION_VECTOR_RADIANS,
+    is_explicit_synthetic_episode,
     raw_real_conversion_readiness_errors,
+    tcp_orientation_convention_readiness_error,
     validate_raw_real_episode,
 )
 
@@ -420,29 +422,12 @@ def _tcp_position_units_guess(records: list[dict[str, Any]], entry: dict[str, An
     return "unknown"
 
 
-def _is_synthetic_episode(
-    metadata: dict[str, Any] | None,
-    recorder_report: dict[str, Any] | None,
-    streams_index: dict[str, Any] | None,
-) -> bool:
-    collection_method = metadata.get("collection_method") if isinstance(metadata, dict) else None
-    recorder_version = metadata.get("recorder_version") if isinstance(metadata, dict) else None
-    return any(
-        [
-            isinstance(collection_method, str) and "synthetic" in collection_method.lower(),
-            isinstance(recorder_version, str) and "synthetic" in recorder_version.lower(),
-            isinstance(recorder_report, dict) and recorder_report.get("synthetic") is True,
-            isinstance(streams_index, dict) and streams_index.get("synthetic") is True,
-        ]
-    )
-
-
 def _orientation_guard(
     metadata: dict[str, Any] | None,
     recorder_report: dict[str, Any] | None,
     streams_index: dict[str, Any] | None,
 ) -> tuple[str, bool]:
-    if _is_synthetic_episode(metadata, recorder_report, streams_index):
+    if is_explicit_synthetic_episode(metadata, recorder_report, streams_index):
         return "synthetic episode: converter uses guarded synthetic rotation-vector-degrees policy", True
     metadata = metadata if isinstance(metadata, dict) else {}
     recorder_report = recorder_report if isinstance(recorder_report, dict) else {}
@@ -451,7 +436,10 @@ def _orientation_guard(
         return "tcp_orientation_convention=rotation_vector_degrees", True
     if convention == ROTATION_VECTOR_RADIANS:
         return "tcp_orientation_convention=rotation_vector_radians", True
-    return "non-synthetic episode requires explicit rotation-vector TCP orientation convention before conversion", False
+    error = tcp_orientation_convention_readiness_error(convention)
+    if error is None:
+        return "tcp_orientation_convention is ready for conversion", True
+    return error, False
 
 
 def _robot_state_summary(
@@ -669,6 +657,7 @@ def inspect_raw_real_episode(
     root = Path(episode_dir)
     validation = validate_raw_real_episode(root)
     metadata, metadata_errors = _read_json_object(root / "metadata.json", "metadata")
+    calibration_refs, calibration_errors = _read_json_object(root / "calibration_refs.json", "calibration_refs")
     recorder_report, recorder_errors = _read_json_object(root / "recorder_report.json", "recorder_report")
     streams_index, streams_index_errors = _read_json_object(root / "streams" / "index.json", "streams/index")
     streams = streams_index.get("streams") if isinstance(streams_index, dict) else None
@@ -718,6 +707,8 @@ def inspect_raw_real_episode(
         streams_index,
         streams,
         records_by_stream,
+        root_dir=root,
+        calibration_refs=calibration_refs,
     )
 
     conversion_blockers = _conversion_blockers(
@@ -731,7 +722,14 @@ def inspect_raw_real_episode(
         conversion_readiness_errors,
     )
     ready_for_conversion = validation.ok and not conversion_blockers
-    inspection_errors = metadata_errors + recorder_errors + streams_index_errors + stream_read_errors + event_read_errors
+    inspection_errors = (
+        metadata_errors
+        + calibration_errors
+        + recorder_errors
+        + streams_index_errors
+        + stream_read_errors
+        + event_read_errors
+    )
     errors = _unique_strings(list(validation.errors) + inspection_errors + conversion_blockers)
     warnings = _unique_strings(list(validation.warnings))
 

@@ -21,7 +21,13 @@ from doosan_forcevla_data.schema.processed_schema import (
     QUATERNION_CONVENTION,
 )
 from doosan_forcevla_data.validate.validate_processed_episode import validate_processed_episode
-from doosan_forcevla_data.validate.validate_raw_real_episode import validate_raw_real_episode
+from doosan_forcevla_data.validate.validate_raw_real_episode import (
+    tcp_orientation_convention_readiness_error,
+    is_explicit_synthetic_episode,
+    raw_real_conversion_readiness_errors,
+    selected_wrench_metadata_for_model_state,
+    validate_raw_real_episode,
+)
 
 
 DATASET_NAME = "doosan_peg_in_hole_v0"
@@ -269,29 +275,12 @@ def _rotvec_to_quat_xyzw(rotvec: list[float]) -> list[float]:
     return [component / norm for component in quat]
 
 
-def _is_synthetic_episode(
-    metadata: dict[str, Any],
-    recorder_report: dict[str, Any],
-    streams_index: dict[str, Any],
-) -> bool:
-    collection_method = metadata.get("collection_method")
-    recorder_version = metadata.get("recorder_version")
-    return any(
-        [
-            isinstance(collection_method, str) and "synthetic" in collection_method.lower(),
-            isinstance(recorder_version, str) and "synthetic" in recorder_version.lower(),
-            recorder_report.get("synthetic") is True,
-            streams_index.get("synthetic") is True,
-        ]
-    )
-
-
 def _orientation_policy(
     metadata: dict[str, Any],
     recorder_report: dict[str, Any],
     streams_index: dict[str, Any],
 ) -> tuple[bool, str, str | None]:
-    if _is_synthetic_episode(metadata, recorder_report, streams_index):
+    if is_explicit_synthetic_episode(metadata, recorder_report, streams_index):
         return True, "synthetic raw-real episode: treating actual_tcp_position[3:6] as rotation vector in degrees", "deg"
 
     convention = metadata.get("tcp_orientation_convention") or recorder_report.get("tcp_orientation_convention")
@@ -300,11 +289,10 @@ def _orientation_policy(
     if convention == ROTATION_VECTOR_RADIANS:
         return False, "tcp_orientation_convention=rotation_vector_radians", "rad"
 
-    raise ValueError(
-        "non-synthetic raw-real episode requires explicit supported TCP orientation convention; "
-        "set tcp_orientation_convention='rotation_vector_degrees' or "
-        "tcp_orientation_convention='rotation_vector_radians' only after lab verification"
-    )
+    error = tcp_orientation_convention_readiness_error(convention)
+    if error is None:
+        error = f"tcp_orientation_convention {convention!r} is not implemented by this converter"
+    raise ValueError(error)
 
 
 def _select_joint_vectors(
@@ -373,6 +361,36 @@ def _select_gripper(gripper_record: dict[str, Any] | None, frame_index: int) -> 
     raise ValueError(
         f"gripper_state record {frame_index}: expected finite gripper_position or gripper_width_m"
     )
+
+
+def _has_gripper_value(record: dict[str, Any]) -> bool:
+    return _is_finite_number(record.get("gripper_position")) or _is_finite_number(record.get("gripper_width_m"))
+
+
+def _require_non_synthetic_gripper_state(
+    primary_indexes: set[int],
+    gripper_by_index: dict[int, dict[str, Any]],
+) -> None:
+    if set(gripper_by_index) != primary_indexes:
+        missing = sorted(primary_indexes - set(gripper_by_index))
+        extra = sorted(set(gripper_by_index) - primary_indexes)
+        details: list[str] = []
+        if missing:
+            details.append(f"missing robot_state_rt record_index values {missing[:10]}")
+        if extra:
+            details.append(f"extra record_index values {extra[:10]}")
+        detail_text = "; ".join(details) if details else "index sets differ"
+        raise ValueError(
+            "non-synthetic raw-real conversion requires aligned gripper_state records; "
+            f"{detail_text}; refusing silent gripper_pos=0.0 fallback"
+        )
+
+    for record_index in sorted(primary_indexes):
+        if not _has_gripper_value(gripper_by_index[record_index]):
+            raise ValueError(
+                f"gripper_state record_index {record_index}: non-synthetic raw-real conversion requires finite "
+                "gripper_position or gripper_width_m; refusing silent gripper_pos=0.0 fallback"
+            )
 
 
 def _resolve_raw_image(raw_root: Path, image_path_value: Any, frame_index: int, stream_name: str) -> Path:
@@ -523,6 +541,7 @@ def convert_raw_real_to_processed(
     _require_aligned_indexes(primary_indexes, wrist_camera_by_index, "wrist_camera")
 
     gripper_by_index: dict[int, dict[str, Any]] = {}
+    gripper_records: list[dict[str, Any]] = []
     if "gripper_state" in streams:
         gripper_records = _read_jsonl_objects(_stream_path(raw_root, streams, "gripper_state"))
         gripper_by_index = _records_by_index(gripper_records, "gripper_state")
@@ -538,11 +557,41 @@ def convert_raw_real_to_processed(
             "used_as_action_label": False,
         }
 
+    records_by_stream: dict[str, list[dict[str, Any]]] = {
+        "joint_states": joint_records,
+        "robot_state_rt": robot_records,
+        "external_camera": external_camera_records,
+        "wrist_camera": wrist_camera_records,
+    }
+    if gripper_records:
+        records_by_stream["gripper_state"] = gripper_records
+    calibration_refs = _read_json_object(raw_root / "calibration_refs.json")
+    conversion_readiness_errors = raw_real_conversion_readiness_errors(
+        metadata,
+        recorder_report,
+        streams_index,
+        streams,
+        records_by_stream,
+        root_dir=raw_root,
+        calibration_refs=calibration_refs,
+    )
+    if conversion_readiness_errors:
+        message = "raw-real episode is not ready for conversion:\n" + "\n".join(
+            f"ERROR: {error}" for error in conversion_readiness_errors
+        )
+        raise ValueError(message)
+    selected_wrench_metadata = selected_wrench_metadata_for_model_state(streams, records_by_stream)
+
     ordered_indexes = sorted(primary_indexes)
     if ordered_indexes != list(range(len(ordered_indexes))):
         raise ValueError("robot_state_rt record_index values must be contiguous from 0 for processed frame_index mapping")
+    if len(ordered_indexes) < 2:
+        raise ValueError(f"raw-real conversion requires at least 2 aligned records; got {len(ordered_indexes)}")
     ordered_robot_records = [robot_by_index[index] for index in ordered_indexes]
     timestamps = _relative_timestamps(ordered_robot_records)
+
+    if not synthetic:
+        _require_non_synthetic_gripper_state(primary_indexes, gripper_by_index)
 
     _prepare_output(raw_root, output_root, overwrite=overwrite)
 
@@ -642,7 +691,11 @@ def convert_raw_real_to_processed(
             "joint_states": "record_index aligned fallback only when robot_state_rt joint vectors are unavailable",
             "external_rgb_path": "external_camera.image_path",
             "tcp_rgb_path": "wrist_camera.image_path",
-            "gripper_state": "record_index aligned optional stream" if gripper_by_index else "absent; gripper_pos=0.0",
+            "gripper_state": (
+                "record_index aligned measured gripper_state stream"
+                if gripper_by_index
+                else "synthetic-only fallback; gripper_pos=0.0"
+            ),
         },
         "unit_conversions": {
             "tcp_position": "raw units to meters",
@@ -658,6 +711,13 @@ def convert_raw_real_to_processed(
         "raw_validation_warnings": validation.warnings,
         "command_context_policy": "diagnostic only; never used as action label",
     }
+
+    if selected_wrench_metadata:
+        processed_metadata["wrench_source_metadata"] = {
+            source: selected_wrench_metadata[source]
+            for source in sorted(wrench_sources)
+            if source in selected_wrench_metadata
+        }
     if command_context_debug is not None:
         processed_metadata["optional_debug"] = {"command_context": command_context_debug}
 

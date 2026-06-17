@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from doosan_forcevla_data.dummy.make_synthetic_raw_real_episode import make_synthetic_raw_real_episode
-from doosan_forcevla_data.validate.validate_raw_real_episode import validate_raw_real_episode
+from doosan_forcevla_data.validate.validate_raw_real_episode import timestamp_tolerance_seconds, validate_raw_real_episode
 
 
 def _write_json(path: Path, data: dict) -> None:
@@ -31,17 +31,88 @@ def _read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def _mark_non_synthetic(episode: Path, convention: str | None = "rotation_vector_degrees") -> None:
+
+
+def _shift_camera_source_stamps(episode: Path, offset_sec: float) -> None:
+    for stream_name in ["external_camera", "wrist_camera"]:
+        index_path = episode / "streams" / stream_name / "index.jsonl"
+        records = _read_jsonl(index_path)
+        for record in records:
+            record["source_stamp"] = float(record["source_stamp"]) + offset_sec
+        _write_jsonl(index_path, records)
+
+
+def _set_source_stamp_tolerance_override(episode: Path, value: object) -> None:
+    streams_index_path = episode / "streams" / "index.json"
+    streams_index = _read_json(streams_index_path)
+    streams_index.setdefault("timebase", {})["max_camera_robot_source_stamp_offset_sec"] = value
+    _write_json(streams_index_path, streams_index)
+
+def _valid_wrench_sources_metadata() -> dict:
+    return {
+        "external_tcp_force": {
+            "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+            "force_unit": "N",
+            "torque_unit": "Nm",
+            "frame": "base",
+            "compensation": "estimated_external_tcp_force",
+            "approved_for_model_state": True,
+        },
+        "raw_force_torque": {
+            "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+            "force_unit": "N",
+            "torque_unit": "Nm",
+            "frame": "flange",
+            "compensation": "raw_flange_sensor",
+            "approved_for_model_state": False,
+        },
+    }
+
+def _mark_non_synthetic(
+    episode: Path,
+    convention: str | None = "rotation_vector_degrees",
+    collection_method: str = "passive_real_recorder",
+    recorder_version: str = "passive_real_recorder_v0",
+    strict_lab_provenance: bool = True,
+    source_stamp_unit: str | None = "seconds",
+    include_wrench_metadata: bool = True,
+) -> None:
     metadata_path = episode / "metadata.json"
     metadata = _read_json(metadata_path)
-    metadata["collection_method"] = "passive_real_recorder"
-    metadata["recorder_version"] = "passive_real_recorder_v0"
+    metadata["collection_method"] = collection_method
+    metadata["recorder_version"] = recorder_version
+    metadata.pop("synthetic", None)
     metadata["source_workspace"] = {"path": "lab/offline", "verified": True}
     metadata.pop("tcp_orientation_convention_verified", None)
     if convention is None:
         metadata.pop("tcp_orientation_convention", None)
     else:
         metadata["tcp_orientation_convention"] = convention
+    if strict_lab_provenance:
+        metadata["lab_provenance_required"] = True
+        metadata["source_workspace"] = {
+            "path": "/home/ktt_rc/robotics_thesis/lab_myros2_ws/src/MyROS2",
+            "git_commit": "abc1234",
+            "git_remote": "https://github.com/Raunak-Chakraborty/doosan-forcevla-data-tools.git",
+            "git_branch": "main",
+            "verified": True,
+        }
+        metadata["live_graph_verification"] = {
+            "exact_doosan_namespace": "/dsr01",
+            "external_camera_topic": "/external_camera/color/image_raw",
+            "wrist_camera_topic": "/wrist_camera/color/image_raw",
+            "read_data_rt_service": "/dsr01/dsr_controller2/realtime/read_data_rt",
+            "tcp_frame": "tcp_link",
+            "flange_frame": "link_6",
+            "tool_frame": "tool0",
+            "force_torque_source": "robot_state_rt.external_tcp_force",
+            "gripper_state_source": "not_available_for_this_episode",
+            "time_sync_verified": True,
+        }
+    else:
+        metadata.pop("lab_provenance_required", None)
+        metadata.pop("strict_lab_provenance", None)
+        metadata.pop("live_graph_verification", None)
     _write_json(metadata_path, metadata)
 
     recorder_report_path = episode / "recorder_report.json"
@@ -55,8 +126,40 @@ def _mark_non_synthetic(episode: Path, convention: str | None = "rotation_vector
     streams_index_path = episode / "streams" / "index.json"
     streams_index = _read_json(streams_index_path)
     streams_index["synthetic"] = False
+    if source_stamp_unit is None:
+        streams_index.pop("timebase", None)
+    else:
+        streams_index["timebase"] = {"source_stamp_unit": source_stamp_unit}
+
+    if strict_lab_provenance:
+        source_names = {
+            "joint_states": "/dsr01/joint_states",
+            "robot_state_rt": "/dsr01/dsr_controller2/realtime/read_data_rt",
+            "tf": "/tf",
+            "tf_static": "/tf_static",
+            "external_camera": "/external_camera/color/image_raw",
+            "wrist_camera": "/wrist_camera/color/image_raw",
+            "command_context": "/doosan_teleop/cmd_vel_6d",
+            "gripper_state": "/gripper_state",
+        }
+        for stream_name, entry in streams_index.get("streams", {}).items():
+            if isinstance(entry, dict):
+                entry["verified"] = True
+                entry["source_name"] = source_names.get(stream_name, f"/verified/{stream_name}")
+    robot_entry = streams_index["streams"]["robot_state_rt"]
+    if include_wrench_metadata:
+        robot_entry["wrench_sources"] = _valid_wrench_sources_metadata()
+    else:
+        robot_entry.pop("wrench_sources", None)
     _write_json(streams_index_path, streams_index)
 
+
+
+def _set_external_wrench_metadata_field(episode: Path, key: str, value) -> None:
+    index_path = episode / "streams" / "index.json"
+    index = _read_json(index_path)
+    index["streams"]["robot_state_rt"]["wrench_sources"]["external_tcp_force"][key] = value
+    _write_json(index_path, index)
 
 def _stamp(index: int, receipt: float | None = None, monotonic: float | None = None) -> dict:
     return {
@@ -188,6 +291,18 @@ def _read_stream_index(episode: Path) -> dict:
 
 
 class ValidateRawRealEpisodeTests(unittest.TestCase):
+
+    def test_timestamp_tolerance_helper_uses_half_frame_default_and_conservative_fallback(self):
+        self.assertAlmostEqual(timestamp_tolerance_seconds({"fps": 30.0}), 1.0 / 60.0)
+        self.assertAlmostEqual(timestamp_tolerance_seconds(None), 0.02)
+        self.assertAlmostEqual(
+            timestamp_tolerance_seconds(
+                {"fps": 30.0},
+                {"timebase": {"max_camera_robot_source_stamp_offset_sec": 0.055}},
+            ),
+            0.055,
+        )
+
     def test_valid_minimal_raw_real_episode_passes(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = _build_valid_episode(Path(tmpdir))
@@ -330,6 +445,47 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
             self.assertFalse(result.ok)
             self.assertTrue(any("image_path must be relative to episode root" in error for error in result.errors))
 
+
+    def test_non_synthetic_corrupt_camera_image_fails_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode)
+            (episode / "streams" / "external_camera" / "frames" / "000000.ppm").write_bytes(b"not an image")
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(
+                any(
+                    "external_camera camera record 0" in error
+                    and "image_path streams/external_camera/frames/000000.ppm is not decodable" in error
+                    for error in result.errors
+                )
+            )
+
+    def test_non_synthetic_declared_camera_dimensions_must_match_decoded_image(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode)
+            index_path = episode / "streams" / "wrist_camera" / "index.jsonl"
+            records = _read_jsonl(index_path)
+            records[0]["width"] = 3
+            _write_jsonl(index_path, records)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(
+                any(
+                    "wrist_camera camera record 0" in error
+                    and "decoded image dimensions do not match declared metadata" in error
+                    and "declared 3x2x3, decoded 2x2x3" in error
+                    for error in result.errors
+                )
+            )
+
     def test_non_monotonic_timestamp_fails(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = _build_valid_episode(Path(tmpdir))
@@ -429,6 +585,68 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
             self.assertFalse(result.ok)
             self.assertTrue(any("gripper_width_m must be non-negative" in error for error in result.errors))
 
+    def test_non_synthetic_missing_gripper_state_fails_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4, include_optional_streams=False)
+            _mark_non_synthetic(episode)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(
+                any(
+                    "gripper_state is required for non-synthetic conversion" in error
+                    and "gripper_pos=0.0" in error
+                    for error in result.errors
+                )
+            )
+
+    def test_non_synthetic_partial_gripper_state_fails_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4, include_optional_streams=True)
+            _mark_non_synthetic(episode)
+            gripper_path = episode / "streams" / "gripper_state.jsonl"
+            records = _read_jsonl(gripper_path)
+            _write_jsonl(gripper_path, records[:-1])
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(
+                any(
+                    "gripper_state must contain one aligned record for every robot_state_rt record_index" in error
+                    and "silent gripper_pos=0.0 fallback is not allowed" in error
+                    for error in result.errors
+                )
+            )
+
+    def test_non_synthetic_non_finite_gripper_value_fails_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4, include_optional_streams=True)
+            _mark_non_synthetic(episode)
+            gripper_path = episode / "streams" / "gripper_state.jsonl"
+            records = _read_jsonl(gripper_path)
+            records[0]["gripper_position"] = math.nan
+            _write_jsonl(gripper_path, records)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("gripper_position must be a finite number" in error for error in result.errors))
+
+    def test_non_synthetic_complete_gripper_state_passes_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4, include_optional_streams=True)
+            _mark_non_synthetic(episode)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertTrue(result.ok, result.errors)
+
     def test_command_context_alignment_warning_not_failure(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = _build_valid_episode(Path(tmpdir))
@@ -522,12 +740,188 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
     def test_non_synthetic_explicit_valid_units_and_convention_passes_validation(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = Path(tmpdir) / "episode_000000"
-            make_synthetic_raw_real_episode(episode, frame_count=4)
+            make_synthetic_raw_real_episode(episode, frame_count=4, include_optional_streams=True)
             _mark_non_synthetic(episode, convention="rotation_vector_degrees")
 
             result = validate_raw_real_episode(episode)
 
             self.assertTrue(result.ok, result.errors)
+
+    def test_non_synthetic_without_strict_lab_provenance_fails_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode, strict_lab_provenance=False)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("strict lab provenance" in error for error in result.errors))
+
+
+    def test_non_synthetic_numeric_source_stamp_without_timebase_fails_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode, source_stamp_unit=None)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("source_stamp unit/timebase" in error for error in result.errors))
+            self.assertTrue(any("timebase.source_stamp_unit" in error for error in result.errors))
+
+    def test_non_synthetic_unsupported_source_stamp_unit_fails_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode, source_stamp_unit="nanoseconds")
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("source_stamp unit/timebase" in error for error in result.errors))
+            self.assertTrue(any("timebase.source_stamp_unit" in error for error in result.errors))
+
+
+    def test_non_synthetic_invalid_selected_wrench_metadata_fails_validation(self):
+        cases = [
+            ("force_unit", "lbf", "force_unit"),
+            ("torque_unit", "lbf_ft", "torque_unit"),
+            ("frame", "unknown", "frame"),
+            ("order", ["Fx", "Fy", "Fz", "Tz", "Ty", "Tx"], "order"),
+            ("approved_for_model_state", False, "approved_for_model_state"),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for key, value, expected_message in cases:
+                with self.subTest(key=key):
+                    episode = Path(tmpdir) / f"episode_{key}"
+                    make_synthetic_raw_real_episode(episode, frame_count=4)
+                    _mark_non_synthetic(episode)
+                    _set_external_wrench_metadata_field(episode, key, value)
+
+                    result = validate_raw_real_episode(episode)
+
+                    self.assertFalse(result.ok)
+                    self.assertTrue(any("wrench metadata" in error for error in result.errors))
+                    self.assertTrue(any(expected_message in error for error in result.errors))
+
+
+    def test_non_synthetic_rotation_vector_radians_passes_orientation_requirement(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4, include_optional_streams=True)
+            _mark_non_synthetic(episode, convention="rotation_vector_radians")
+            robot_path = episode / "streams" / "robot_state_rt.jsonl"
+            robot_records = _read_jsonl(robot_path)
+            for record in robot_records:
+                record["units"]["tcp_orientation"] = "rad"
+            _write_jsonl(robot_path, robot_records)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertTrue(result.ok, result.errors)
+
+    def test_non_synthetic_doosan_euler_conventions_fail_with_explicit_message(self):
+        conventions = [
+            "doosan_posx_euler_zyz_degrees",
+            "doosan_robotstate_actual_tcp_position_euler_zyz_degrees",
+            "euler_zyz_degrees",
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for idx, convention in enumerate(conventions):
+                with self.subTest(convention=convention):
+                    episode = Path(tmpdir) / f"episode_{idx:06d}"
+                    make_synthetic_raw_real_episode(episode, frame_count=4)
+                    _mark_non_synthetic(episode, convention=convention)
+
+                    result = validate_raw_real_episode(episode)
+
+                    self.assertFalse(result.ok)
+                    self.assertTrue(any(convention in error for error in result.errors))
+                    self.assertTrue(any("recognized but unsupported for conversion" in error for error in result.errors))
+                    self.assertTrue(any("Doosan native Euler ZYZ" in error for error in result.errors))
+
+    def test_non_synthetic_unknown_orientation_convention_lists_supported_and_unsupported(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode, convention="quaternion_xyzw")
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            message = "\n".join(result.errors)
+            self.assertIn("unknown tcp_orientation_convention 'quaternion_xyzw'", message)
+            self.assertIn("supported conversion conventions", message)
+            self.assertIn("rotation_vector_degrees", message)
+            self.assertIn("rotation_vector_radians", message)
+            self.assertIn("recognized but unsupported Doosan/native conventions", message)
+            self.assertIn("doosan_posx_euler_zyz_degrees", message)
+
+
+    def test_non_synthetic_decodable_camera_images_with_matching_dimensions_pass_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4, include_optional_streams=True)
+            _mark_non_synthetic(episode, convention="rotation_vector_degrees")
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertTrue(result.ok, result.errors)
+            self.assertFalse(any("not decodable" in error for error in result.errors))
+            self.assertFalse(any("decoded image dimensions" in error for error in result.errors))
+
+    def test_non_synthetic_missing_required_calibration_ref_fails_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode)
+            calibration_path = episode / "calibration_refs.json"
+            calibration_refs = _read_json(calibration_path)
+            del calibration_refs["camera_intrinsics"]["external_camera"]
+            _write_json(calibration_path, calibration_refs)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(
+                any(
+                    "calibration_refs.camera_intrinsics.external_camera is required" in error
+                    for error in result.errors
+                )
+            )
+
+    def test_non_synthetic_empty_or_unknown_calibration_ref_fails_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode)
+            calibration_path = episode / "calibration_refs.json"
+            calibration_refs = _read_json(calibration_path)
+            calibration_refs["camera_intrinsics"]["external_camera"] = ""
+            calibration_refs["tcp_tool_calibration"] = {"id": "unknown"}
+            calibration_refs["force_torque_calibration"] = "unknown"
+            _write_json(calibration_path, calibration_refs)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(
+                any(
+                    "calibration_refs.camera_intrinsics.external_camera must be a non-empty known" in error
+                    for error in result.errors
+                )
+            )
+            self.assertTrue(
+                any("calibration_refs.tcp_tool_calibration must be a non-empty known" in error for error in result.errors)
+            )
+            self.assertTrue(
+                any(
+                    "calibration_refs.force_torque_calibration must be a non-empty known" in error
+                    for error in result.errors
+                )
+            )
 
     def test_non_synthetic_verified_boolean_without_convention_fails_validation(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -544,10 +938,34 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
             self.assertFalse(result.ok)
             self.assertTrue(any("tcp_orientation_convention must be one of" in error for error in result.errors))
 
+
+    def test_substring_synthetic_names_do_not_bypass_non_synthetic_validation(self):
+        cases = [
+            ("non_synthetic_lab_capture", "passive_real_recorder_v0"),
+            ("real_non_synthetic_test", "passive_real_recorder_v0"),
+            ("passive_real_recorder", "non_synthetic_v1"),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for case_idx, (collection_method, recorder_version) in enumerate(cases):
+                with self.subTest(collection_method=collection_method, recorder_version=recorder_version):
+                    episode = Path(tmpdir) / f"episode_{case_idx:06d}"
+                    make_synthetic_raw_real_episode(episode, frame_count=4)
+                    _mark_non_synthetic(
+                        episode,
+                        convention=None,
+                        collection_method=collection_method,
+                        recorder_version=recorder_version,
+                    )
+
+                    result = validate_raw_real_episode(episode)
+
+                    self.assertFalse(result.ok)
+                    self.assertTrue(any("tcp_orientation_convention must be one of" in error for error in result.errors))
+
     def test_joint_states_fallback_allows_missing_robot_state_joint_vectors(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = Path(tmpdir) / "episode_000000"
-            make_synthetic_raw_real_episode(episode, frame_count=4)
+            make_synthetic_raw_real_episode(episode, frame_count=4, include_optional_streams=True)
             _mark_non_synthetic(episode)
             robot_path = episode / "streams" / "robot_state_rt.jsonl"
             robot_records = _read_jsonl(robot_path)
@@ -579,10 +997,57 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
             self.assertFalse(result.ok)
             self.assertTrue(any("source_stamp differs from robot_state_rt" in error for error in result.errors))
 
-    def test_small_camera_source_stamp_jitter_passes_validation(self):
+
+    def test_camera_source_stamp_offset_above_half_frame_fails_validation(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = Path(tmpdir) / "episode_000000"
             make_synthetic_raw_real_episode(episode, frame_count=4, fps=30.0)
+            _mark_non_synthetic(episode)
+            _shift_camera_source_stamps(episode, 0.05)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            message = "\n".join(result.errors)
+            self.assertIn("source_stamp differs from robot_state_rt by 0.050000s", message)
+            self.assertIn("allowed camera/robot source_stamp offset is 0.016667s", message)
+            self.assertIn("default 0.5/fps from metadata.fps=30", message)
+
+    def test_camera_source_stamp_tolerance_override_allows_bounded_offset(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4, fps=30.0, include_optional_streams=True)
+            _mark_non_synthetic(episode)
+            _set_source_stamp_tolerance_override(episode, 0.055)
+            _shift_camera_source_stamps(episode, 0.05)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertTrue(result.ok, result.errors)
+            self.assertTrue(any("max_camera_robot_source_stamp_offset_sec=0.055000s" in warning for warning in result.warnings))
+
+    def test_camera_source_stamp_tolerance_override_must_be_positive_and_bounded(self):
+        cases = [
+            (0.0, "must be a finite positive number"),
+            (0.08, "exceeds allowed maximum 0.066667s"),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for idx, (override, expected) in enumerate(cases):
+                with self.subTest(override=override):
+                    episode = Path(tmpdir) / f"episode_{idx:06d}"
+                    make_synthetic_raw_real_episode(episode, frame_count=4, fps=30.0)
+                    _mark_non_synthetic(episode)
+                    _set_source_stamp_tolerance_override(episode, override)
+
+                    result = validate_raw_real_episode(episode)
+
+                    self.assertFalse(result.ok)
+                    self.assertTrue(any(expected in error for error in result.errors))
+
+    def test_small_camera_source_stamp_jitter_passes_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4, fps=30.0, include_optional_streams=True)
             _mark_non_synthetic(episode)
             for stream_name in ["external_camera", "wrist_camera"]:
                 index_path = episode / "streams" / stream_name / "index.jsonl"

@@ -55,6 +55,7 @@ def _mark_non_synthetic_with_required_units(episode: Path) -> None:
     index_path = episode / "streams" / "index.json"
     index = _read_json(index_path)
     index["synthetic"] = False
+    index["timebase"] = {"source_stamp_unit": "seconds"}
 
     source_names = {
         "joint_states": "/joint_states",

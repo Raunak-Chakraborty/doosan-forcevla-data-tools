@@ -32,6 +32,7 @@ def _mark_non_synthetic(
     episode: Path,
     convention: str | None = "rotation_vector_degrees",
     strict_lab_provenance: bool = True,
+    source_stamp_unit: str | None = "seconds",
 ) -> None:
     metadata_path = episode / "metadata.json"
     metadata = _read_json(metadata_path)
@@ -81,6 +82,11 @@ def _mark_non_synthetic(
     streams_index_path = episode / "streams" / "index.json"
     streams_index = _read_json(streams_index_path)
     streams_index["synthetic"] = False
+    if source_stamp_unit is None:
+        streams_index.pop("timebase", None)
+    else:
+        streams_index["timebase"] = {"source_stamp_unit": source_stamp_unit}
+
     if strict_lab_provenance:
         source_names = {
             "joint_states": "/dsr01/joint_states",
@@ -356,6 +362,21 @@ class InspectRawRealEpisodeTests(unittest.TestCase):
             self.assertFalse(report["ready_for_conversion"])
             self.assertTrue(any("strict lab provenance" in error for error in report["errors"]))
             self.assertTrue(any("strict lab provenance" in blocker for blocker in report["conversion_blockers"]))
+
+
+    def test_non_synthetic_numeric_source_stamp_without_timebase_blocks_readiness(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode, source_stamp_unit=None)
+
+            report = inspect_raw_real_episode(episode)
+
+            self.assertFalse(report["ready_for_conversion"])
+            self.assertTrue(
+                any("source_stamp" in blocker and "timebase" in blocker for blocker in report["conversion_blockers"])
+            )
+            self.assertTrue(any("source_stamp" in error and "timebase" in error for error in report["errors"]))
 
     def test_non_synthetic_verified_boolean_without_convention_blocks_readiness(self):
         with tempfile.TemporaryDirectory() as tmpdir:

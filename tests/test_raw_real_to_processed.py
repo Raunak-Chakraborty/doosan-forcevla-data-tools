@@ -37,6 +37,7 @@ def _mark_non_synthetic(
     episode: Path,
     convention: str | None = "rotation_vector_degrees",
     strict_lab_provenance: bool = True,
+    source_stamp_unit: str | None = "seconds",
 ) -> None:
     metadata_path = episode / "metadata.json"
     metadata = _read_json(metadata_path)
@@ -86,6 +87,11 @@ def _mark_non_synthetic(
     streams_index_path = episode / "streams" / "index.json"
     streams_index = _read_json(streams_index_path)
     streams_index["synthetic"] = False
+    if source_stamp_unit is None:
+        streams_index.pop("timebase", None)
+    else:
+        streams_index["timebase"] = {"source_stamp_unit": source_stamp_unit}
+
     if strict_lab_provenance:
         source_names = {
             "joint_states": "/dsr01/joint_states",
@@ -464,6 +470,38 @@ class RawRealToProcessedTests(unittest.TestCase):
             for frame in frames[:-1]:
                 self.assertNotEqual(frame["measured_action"], [9.0] * ACTION_DIM)
                 self.assertNotEqual(frame["measured_action"][:6], [9.0, 8.0, 7.0, 6.0, 5.0, 4.0])
+
+
+    def test_non_synthetic_numeric_source_stamp_without_timebase_fails_before_writing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode, source_stamp_unit=None)
+
+            with self.assertRaisesRegex(ValueError, "source_stamp unit/timebase"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            self.assertFalse(processed_episode.exists())
+
+    def test_non_synthetic_numeric_source_stamp_without_timebase_preserves_existing_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            sentinel = processed_episode / "sentinel.txt"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(raw_episode, source_stamp_unit=None)
+            processed_episode.mkdir(parents=True)
+            sentinel.write_text("keep\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "source_stamp unit/timebase"):
+                convert_raw_real_to_processed(raw_episode, processed_episode, overwrite=True)
+
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
 
     def test_non_synthetic_without_explicit_tcp_orientation_convention_fails_fast(self):
         with tempfile.TemporaryDirectory() as tmpdir:

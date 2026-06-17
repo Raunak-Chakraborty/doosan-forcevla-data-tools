@@ -35,6 +35,7 @@ def _mark_non_synthetic(
     episode: Path,
     convention: str | None = "rotation_vector_degrees",
     strict_lab_provenance: bool = True,
+    source_stamp_unit: str | None = "seconds",
 ) -> None:
     metadata_path = episode / "metadata.json"
     metadata = _read_json(metadata_path)
@@ -84,6 +85,11 @@ def _mark_non_synthetic(
     streams_index_path = episode / "streams" / "index.json"
     streams_index = _read_json(streams_index_path)
     streams_index["synthetic"] = False
+    if source_stamp_unit is None:
+        streams_index.pop("timebase", None)
+    else:
+        streams_index["timebase"] = {"source_stamp_unit": source_stamp_unit}
+
     if strict_lab_provenance:
         source_names = {
             "joint_states": "/dsr01/joint_states",
@@ -583,6 +589,31 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
 
             self.assertFalse(result.ok)
             self.assertTrue(any("strict lab provenance" in error for error in result.errors))
+
+
+    def test_non_synthetic_numeric_source_stamp_without_timebase_fails_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode, source_stamp_unit=None)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("source_stamp unit/timebase" in error for error in result.errors))
+            self.assertTrue(any("timebase.source_stamp_unit" in error for error in result.errors))
+
+    def test_non_synthetic_unsupported_source_stamp_unit_fails_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode, source_stamp_unit="nanoseconds")
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("source_stamp unit/timebase" in error for error in result.errors))
+            self.assertTrue(any("timebase.source_stamp_unit" in error for error in result.errors))
 
     def test_non_synthetic_verified_boolean_without_convention_fails_validation(self):
         with tempfile.TemporaryDirectory() as tmpdir:

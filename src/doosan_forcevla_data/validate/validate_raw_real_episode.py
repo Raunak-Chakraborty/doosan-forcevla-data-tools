@@ -44,6 +44,8 @@ CONVERTER_REQUIRED_ALIGNMENT_STREAMS = ["joint_states", "external_camera", "wris
 CONVERTER_ALIGNED_OPTIONAL_STREAMS = ["gripper_state"]
 ROTATION_VECTOR_DEGREES = "rotation_vector_degrees"
 ROTATION_VECTOR_RADIANS = "rotation_vector_radians"
+EXPLICIT_SYNTHETIC_COLLECTION_METHODS = {"synthetic_raw_real", "synthetic_raw_real_fixture"}
+EXPLICIT_SYNTHETIC_RECORDER_VERSIONS = {"synthetic_raw_real_generator_v0"}
 SOURCE_STAMP_SECONDS_UNIT = "seconds"
 
 WRENCH_MODEL_STATE_ORDER = ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"]
@@ -143,7 +145,8 @@ def _combined_units(record: dict[str, Any] | None, stream_entry: dict[str, Any] 
     return units
 
 
-def _is_synthetic_episode(
+
+def is_explicit_synthetic_episode(
     metadata: dict[str, Any] | None,
     recorder_report: dict[str, Any] | None,
     streams_index: dict[str, Any] | None,
@@ -152,13 +155,13 @@ def _is_synthetic_episode(
     recorder_version = metadata.get("recorder_version") if isinstance(metadata, dict) else None
     return any(
         [
-            isinstance(collection_method, str) and "synthetic" in collection_method.lower(),
-            isinstance(recorder_version, str) and "synthetic" in recorder_version.lower(),
+            isinstance(metadata, dict) and metadata.get("synthetic") is True,
+            collection_method in EXPLICIT_SYNTHETIC_COLLECTION_METHODS,
+            recorder_version in EXPLICIT_SYNTHETIC_RECORDER_VERSIONS,
             isinstance(recorder_report, dict) and recorder_report.get("synthetic") is True,
             isinstance(streams_index, dict) and streams_index.get("synthetic") is True,
         ]
     )
-
 
 def _tcp_orientation_convention(
     metadata: dict[str, Any] | None,
@@ -1029,7 +1032,7 @@ def raw_real_conversion_readiness_errors(
     """Return validator errors for raw_real_v0 data the converter would reject."""
 
     errors = _source_stamp_alignment_errors(records_by_stream, metadata)
-    if _is_synthetic_episode(metadata, recorder_report, streams_index):
+    if is_explicit_synthetic_episode(metadata, recorder_report, streams_index):
         return errors
     if not isinstance(streams, dict):
         return errors

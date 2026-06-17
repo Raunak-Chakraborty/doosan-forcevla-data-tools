@@ -57,14 +57,17 @@ def _valid_wrench_sources_metadata() -> dict:
 def _mark_non_synthetic(
     episode: Path,
     convention: str | None = "rotation_vector_degrees",
+    collection_method: str = "passive_real_recorder",
+    recorder_version: str = "passive_real_recorder_v0",
     strict_lab_provenance: bool = True,
     source_stamp_unit: str | None = "seconds",
     include_wrench_metadata: bool = True,
 ) -> None:
     metadata_path = episode / "metadata.json"
     metadata = _read_json(metadata_path)
-    metadata["collection_method"] = "passive_real_recorder"
-    metadata["recorder_version"] = "passive_real_recorder_v0"
+    metadata["collection_method"] = collection_method
+    metadata["recorder_version"] = recorder_version
+    metadata.pop("synthetic", None)
     metadata["source_workspace"] = {"path": "lab/offline", "verified": True}
     metadata.pop("tcp_orientation_convention_verified", None)
     if convention is None:
@@ -601,6 +604,46 @@ class RawRealToProcessedTests(unittest.TestCase):
             sentinel.write_text("keep\n", encoding="utf-8")
 
             with self.assertRaisesRegex(ValueError, "strict lab provenance"):
+                convert_raw_real_to_processed(raw_episode, processed_episode, overwrite=True)
+
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
+
+
+    def test_substring_synthetic_collection_method_fails_before_output_creation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(
+                raw_episode,
+                convention=None,
+                collection_method="non_synthetic_lab_capture",
+            )
+
+            with self.assertRaisesRegex(ValueError, "tcp_orientation_convention"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            self.assertFalse(processed_episode.exists())
+
+    def test_substring_synthetic_collection_method_preserves_existing_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            sentinel = processed_episode / "sentinel.txt"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4)
+            _mark_non_synthetic(
+                raw_episode,
+                convention=None,
+                collection_method="non_synthetic_lab_capture",
+            )
+            processed_episode.mkdir(parents=True)
+            sentinel.write_text("keep\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "tcp_orientation_convention"):
                 convert_raw_real_to_processed(raw_episode, processed_episode, overwrite=True)
 
             self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")

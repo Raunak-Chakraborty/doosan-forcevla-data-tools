@@ -60,6 +60,26 @@ def _mark_non_synthetic(episode: Path, convention: str | None = "rotation_vector
     _write_json(streams_index_path, streams_index)
 
 
+def _truncate_to_one_aligned_record(episode: Path) -> None:
+    streams_index_path = episode / "streams" / "index.json"
+    streams_index = _read_json(streams_index_path)
+    for stream_name in ["joint_states", "robot_state_rt", "tf", "external_camera", "wrist_camera"]:
+        streams_index["streams"][stream_name]["record_count"] = 1
+    _write_json(streams_index_path, streams_index)
+
+    for relative_path in [
+        "streams/joint_states.jsonl",
+        "streams/robot_state_rt.jsonl",
+        "streams/tf.jsonl",
+    ]:
+        path = episode / relative_path
+        _write_jsonl(path, _read_jsonl(path)[:1])
+
+    for stream_name in ["external_camera", "wrist_camera"]:
+        path = episode / "streams" / stream_name / "index.jsonl"
+        _write_jsonl(path, _read_jsonl(path)[:1])
+
+
 class RawRealToProcessedTests(unittest.TestCase):
     def test_synthetic_raw_real_episode_converts_and_validates(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -109,6 +129,94 @@ class RawRealToProcessedTests(unittest.TestCase):
             self.assertEqual(frames[-1]["measured_action"], [0.0] * ACTION_DIM)
             self.assertTrue(has_nonzero_translation)
             self.assertTrue(has_nonzero_rotation)
+
+    def test_two_frame_synthetic_raw_real_episode_converts_with_one_action(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=2)
+            convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            result = validate_processed_episode(processed_episode)
+            self.assertTrue(result.ok, result.errors)
+            frames = _read_jsonl(processed_episode / "frames.jsonl")
+            self.assertEqual(len(frames), 2)
+            self.assertFalse(frames[0]["action_is_terminal_padding"])
+            self.assertTrue(frames[-1]["action_is_terminal_padding"])
+            self.assertTrue(any(abs(value) > 1e-12 for value in frames[0]["measured_action"][:6]))
+
+    def test_one_aligned_record_fails_before_output_creation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=2)
+            _truncate_to_one_aligned_record(raw_episode)
+
+            validation = validate_raw_real_episode(raw_episode)
+            report = inspect_raw_real_episode(raw_episode)
+            self.assertTrue(validation.ok, validation.errors)
+            self.assertFalse(report["ready_for_conversion"])
+            self.assertTrue(
+                any("at least 2 records" in blocker for blocker in report["conversion_blockers"]),
+                report["conversion_blockers"],
+            )
+            with self.assertRaisesRegex(ValueError, "requires at least 2 aligned records; got 1"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            self.assertFalse(processed_episode.exists())
+
+    def test_one_aligned_record_fails_before_overwriting_existing_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=2)
+            _truncate_to_one_aligned_record(raw_episode)
+            processed_episode.mkdir(parents=True)
+            sentinel = processed_episode / "keep.txt"
+            sentinel.write_text("keep\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "requires at least 2 aligned records; got 1"):
+                convert_raw_real_to_processed(raw_episode, processed_episode, overwrite=True)
+
+            self.assertTrue(sentinel.is_file())
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
+            self.assertFalse((processed_episode / "metadata_processed.json").exists())
+            self.assertFalse((processed_episode / "frames.jsonl").exists())
+
+    def test_cli_one_aligned_record_fails_before_output_creation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_000000"
+            processed_episode = root / "processed" / "episode_000000"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=2)
+            _truncate_to_one_aligned_record(raw_episode)
+            env = dict(os.environ)
+            src_path = Path(__file__).resolve().parents[1] / "src"
+            env["PYTHONPATH"] = str(src_path) + os.pathsep + env.get("PYTHONPATH", "")
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "doosan_forcevla_data.convert.raw_real_to_processed",
+                    "--raw-real",
+                    str(raw_episode),
+                    "--output",
+                    str(processed_episode),
+                ],
+                check=False,
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("requires at least 2 aligned records; got 1", completed.stdout)
+            self.assertFalse(processed_episode.exists())
 
     def test_optional_streams_absent_convert_with_zero_gripper_position(self):
         with tempfile.TemporaryDirectory() as tmpdir:

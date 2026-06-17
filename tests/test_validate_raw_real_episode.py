@@ -585,6 +585,68 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
             self.assertFalse(result.ok)
             self.assertTrue(any("gripper_width_m must be non-negative" in error for error in result.errors))
 
+    def test_non_synthetic_missing_gripper_state_fails_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4, include_optional_streams=False)
+            _mark_non_synthetic(episode)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(
+                any(
+                    "gripper_state is required for non-synthetic conversion" in error
+                    and "gripper_pos=0.0" in error
+                    for error in result.errors
+                )
+            )
+
+    def test_non_synthetic_partial_gripper_state_fails_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4, include_optional_streams=True)
+            _mark_non_synthetic(episode)
+            gripper_path = episode / "streams" / "gripper_state.jsonl"
+            records = _read_jsonl(gripper_path)
+            _write_jsonl(gripper_path, records[:-1])
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(
+                any(
+                    "gripper_state must contain one aligned record for every robot_state_rt record_index" in error
+                    and "silent gripper_pos=0.0 fallback is not allowed" in error
+                    for error in result.errors
+                )
+            )
+
+    def test_non_synthetic_non_finite_gripper_value_fails_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4, include_optional_streams=True)
+            _mark_non_synthetic(episode)
+            gripper_path = episode / "streams" / "gripper_state.jsonl"
+            records = _read_jsonl(gripper_path)
+            records[0]["gripper_position"] = math.nan
+            _write_jsonl(gripper_path, records)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("gripper_position must be a finite number" in error for error in result.errors))
+
+    def test_non_synthetic_complete_gripper_state_passes_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4, include_optional_streams=True)
+            _mark_non_synthetic(episode)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertTrue(result.ok, result.errors)
+
     def test_command_context_alignment_warning_not_failure(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = _build_valid_episode(Path(tmpdir))
@@ -678,7 +740,7 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
     def test_non_synthetic_explicit_valid_units_and_convention_passes_validation(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = Path(tmpdir) / "episode_000000"
-            make_synthetic_raw_real_episode(episode, frame_count=4)
+            make_synthetic_raw_real_episode(episode, frame_count=4, include_optional_streams=True)
             _mark_non_synthetic(episode, convention="rotation_vector_degrees")
 
             result = validate_raw_real_episode(episode)
@@ -748,7 +810,7 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
     def test_non_synthetic_rotation_vector_radians_passes_orientation_requirement(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = Path(tmpdir) / "episode_000000"
-            make_synthetic_raw_real_episode(episode, frame_count=4)
+            make_synthetic_raw_real_episode(episode, frame_count=4, include_optional_streams=True)
             _mark_non_synthetic(episode, convention="rotation_vector_radians")
             robot_path = episode / "streams" / "robot_state_rt.jsonl"
             robot_records = _read_jsonl(robot_path)
@@ -801,7 +863,7 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
     def test_non_synthetic_decodable_camera_images_with_matching_dimensions_pass_validation(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = Path(tmpdir) / "episode_000000"
-            make_synthetic_raw_real_episode(episode, frame_count=4)
+            make_synthetic_raw_real_episode(episode, frame_count=4, include_optional_streams=True)
             _mark_non_synthetic(episode, convention="rotation_vector_degrees")
 
             result = validate_raw_real_episode(episode)
@@ -903,7 +965,7 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
     def test_joint_states_fallback_allows_missing_robot_state_joint_vectors(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = Path(tmpdir) / "episode_000000"
-            make_synthetic_raw_real_episode(episode, frame_count=4)
+            make_synthetic_raw_real_episode(episode, frame_count=4, include_optional_streams=True)
             _mark_non_synthetic(episode)
             robot_path = episode / "streams" / "robot_state_rt.jsonl"
             robot_records = _read_jsonl(robot_path)
@@ -954,7 +1016,7 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
     def test_camera_source_stamp_tolerance_override_allows_bounded_offset(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = Path(tmpdir) / "episode_000000"
-            make_synthetic_raw_real_episode(episode, frame_count=4, fps=30.0)
+            make_synthetic_raw_real_episode(episode, frame_count=4, fps=30.0, include_optional_streams=True)
             _mark_non_synthetic(episode)
             _set_source_stamp_tolerance_override(episode, 0.055)
             _shift_camera_source_stamps(episode, 0.05)
@@ -985,7 +1047,7 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
     def test_small_camera_source_stamp_jitter_passes_validation(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = Path(tmpdir) / "episode_000000"
-            make_synthetic_raw_real_episode(episode, frame_count=4, fps=30.0)
+            make_synthetic_raw_real_episode(episode, frame_count=4, fps=30.0, include_optional_streams=True)
             _mark_non_synthetic(episode)
             for stream_name in ["external_camera", "wrist_camera"]:
                 index_path = episode / "streams" / stream_name / "index.jsonl"

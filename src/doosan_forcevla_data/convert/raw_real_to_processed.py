@@ -21,7 +21,10 @@ from doosan_forcevla_data.schema.processed_schema import (
     QUATERNION_CONVENTION,
 )
 from doosan_forcevla_data.validate.validate_processed_episode import validate_processed_episode
-from doosan_forcevla_data.validate.validate_raw_real_episode import validate_raw_real_episode
+from doosan_forcevla_data.validate.validate_raw_real_episode import (
+    raw_real_conversion_readiness_errors,
+    validate_raw_real_episode,
+)
 
 
 DATASET_NAME = "doosan_peg_in_hole_v0"
@@ -523,6 +526,7 @@ def convert_raw_real_to_processed(
     _require_aligned_indexes(primary_indexes, wrist_camera_by_index, "wrist_camera")
 
     gripper_by_index: dict[int, dict[str, Any]] = {}
+    gripper_records: list[dict[str, Any]] = []
     if "gripper_state" in streams:
         gripper_records = _read_jsonl_objects(_stream_path(raw_root, streams, "gripper_state"))
         gripper_by_index = _records_by_index(gripper_records, "gripper_state")
@@ -537,6 +541,27 @@ def convert_raw_real_to_processed(
             "last_record": command_context_records[-1] if command_context_records else None,
             "used_as_action_label": False,
         }
+
+    records_by_stream: dict[str, list[dict[str, Any]]] = {
+        "joint_states": joint_records,
+        "robot_state_rt": robot_records,
+        "external_camera": external_camera_records,
+        "wrist_camera": wrist_camera_records,
+    }
+    if gripper_records:
+        records_by_stream["gripper_state"] = gripper_records
+    conversion_readiness_errors = raw_real_conversion_readiness_errors(
+        metadata,
+        recorder_report,
+        streams_index,
+        streams,
+        records_by_stream,
+    )
+    if conversion_readiness_errors:
+        message = "raw-real episode is not ready for conversion:\n" + "\n".join(
+            f"ERROR: {error}" for error in conversion_readiness_errors
+        )
+        raise ValueError(message)
 
     ordered_indexes = sorted(primary_indexes)
     if ordered_indexes != list(range(len(ordered_indexes))):

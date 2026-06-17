@@ -287,6 +287,69 @@ class InspectRawRealEpisodeTests(unittest.TestCase):
             self.assertTrue(report_path.is_file())
             self.assertFalse(_read_json(report_path)["ready_for_conversion"])
 
+    def test_non_synthetic_corrupt_camera_image_blocks_readiness(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode)
+            (episode / "streams" / "external_camera" / "frames" / "000000.ppm").write_bytes(b"not an image")
+
+            report = inspect_raw_real_episode(episode)
+
+            self.assertFalse(report["ready_for_conversion"])
+            self.assertFalse(report["validation"]["ok"])
+            self.assertTrue(
+                any(
+                    "external_camera camera record 0" in blocker
+                    and "not decodable" in blocker
+                    for blocker in report["conversion_blockers"]
+                )
+            )
+
+    def test_non_synthetic_camera_dimension_mismatch_blocks_readiness(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode)
+            index_path = episode / "streams" / "wrist_camera" / "index.jsonl"
+            records = _read_jsonl(index_path)
+            records[0]["height"] = 3
+            _write_jsonl(index_path, records)
+
+            report = inspect_raw_real_episode(episode)
+
+            self.assertFalse(report["ready_for_conversion"])
+            self.assertFalse(report["validation"]["ok"])
+            self.assertTrue(
+                any(
+                    "wrist_camera camera record 0" in blocker
+                    and "decoded image dimensions do not match declared metadata" in blocker
+                    and "declared 2x3x3, decoded 2x2x3" in blocker
+                    for blocker in report["conversion_blockers"]
+                )
+            )
+
+    def test_non_synthetic_missing_calibration_ref_blocks_readiness(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode)
+            calibration_path = episode / "calibration_refs.json"
+            calibration_refs = _read_json(calibration_path)
+            del calibration_refs["camera_extrinsics"]["wrist_camera"]
+            _write_json(calibration_path, calibration_refs)
+
+            report = inspect_raw_real_episode(episode)
+
+            self.assertFalse(report["ready_for_conversion"])
+            self.assertFalse(report["validation"]["ok"])
+            self.assertTrue(
+                any(
+                    "calibration_refs.camera_extrinsics.wrist_camera is required" in blocker
+                    for blocker in report["conversion_blockers"]
+                )
+            )
+
     def test_record_index_mismatch_is_reflected_in_timeline_and_validation_errors(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = Path(tmpdir) / "episode_000000"

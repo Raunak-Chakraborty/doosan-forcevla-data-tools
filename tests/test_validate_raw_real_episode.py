@@ -445,6 +445,47 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
             self.assertFalse(result.ok)
             self.assertTrue(any("image_path must be relative to episode root" in error for error in result.errors))
 
+
+    def test_non_synthetic_corrupt_camera_image_fails_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode)
+            (episode / "streams" / "external_camera" / "frames" / "000000.ppm").write_bytes(b"not an image")
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(
+                any(
+                    "external_camera camera record 0" in error
+                    and "image_path streams/external_camera/frames/000000.ppm is not decodable" in error
+                    for error in result.errors
+                )
+            )
+
+    def test_non_synthetic_declared_camera_dimensions_must_match_decoded_image(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode)
+            index_path = episode / "streams" / "wrist_camera" / "index.jsonl"
+            records = _read_jsonl(index_path)
+            records[0]["width"] = 3
+            _write_jsonl(index_path, records)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(
+                any(
+                    "wrist_camera camera record 0" in error
+                    and "decoded image dimensions do not match declared metadata" in error
+                    and "declared 3x2x3, decoded 2x2x3" in error
+                    for error in result.errors
+                )
+            )
+
     def test_non_monotonic_timestamp_fails(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             episode = _build_valid_episode(Path(tmpdir))
@@ -755,6 +796,70 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
             self.assertIn("rotation_vector_radians", message)
             self.assertIn("recognized but unsupported Doosan/native conventions", message)
             self.assertIn("doosan_posx_euler_zyz_degrees", message)
+
+
+    def test_non_synthetic_decodable_camera_images_with_matching_dimensions_pass_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode, convention="rotation_vector_degrees")
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertTrue(result.ok, result.errors)
+            self.assertFalse(any("not decodable" in error for error in result.errors))
+            self.assertFalse(any("decoded image dimensions" in error for error in result.errors))
+
+    def test_non_synthetic_missing_required_calibration_ref_fails_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode)
+            calibration_path = episode / "calibration_refs.json"
+            calibration_refs = _read_json(calibration_path)
+            del calibration_refs["camera_intrinsics"]["external_camera"]
+            _write_json(calibration_path, calibration_refs)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(
+                any(
+                    "calibration_refs.camera_intrinsics.external_camera is required" in error
+                    for error in result.errors
+                )
+            )
+
+    def test_non_synthetic_empty_or_unknown_calibration_ref_fails_validation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            episode = Path(tmpdir) / "episode_000000"
+            make_synthetic_raw_real_episode(episode, frame_count=4)
+            _mark_non_synthetic(episode)
+            calibration_path = episode / "calibration_refs.json"
+            calibration_refs = _read_json(calibration_path)
+            calibration_refs["camera_intrinsics"]["external_camera"] = ""
+            calibration_refs["tcp_tool_calibration"] = {"id": "unknown"}
+            calibration_refs["force_torque_calibration"] = "unknown"
+            _write_json(calibration_path, calibration_refs)
+
+            result = validate_raw_real_episode(episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(
+                any(
+                    "calibration_refs.camera_intrinsics.external_camera must be a non-empty known" in error
+                    for error in result.errors
+                )
+            )
+            self.assertTrue(
+                any("calibration_refs.tcp_tool_calibration must be a non-empty known" in error for error in result.errors)
+            )
+            self.assertTrue(
+                any(
+                    "calibration_refs.force_torque_calibration must be a non-empty known" in error
+                    for error in result.errors
+                )
+            )
 
     def test_non_synthetic_verified_boolean_without_convention_fails_validation(self):
         with tempfile.TemporaryDirectory() as tmpdir:

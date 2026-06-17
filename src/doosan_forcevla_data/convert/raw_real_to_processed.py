@@ -535,12 +535,15 @@ def convert_raw_real_to_processed(
     }
     if gripper_records:
         records_by_stream["gripper_state"] = gripper_records
+    calibration_refs = _read_json_object(raw_root / "calibration_refs.json")
     conversion_readiness_errors = raw_real_conversion_readiness_errors(
         metadata,
         recorder_report,
         streams_index,
         streams,
         records_by_stream,
+        root_dir=raw_root,
+        calibration_refs=calibration_refs,
     )
     if conversion_readiness_errors:
         message = "raw-real episode is not ready for conversion:\n" + "\n".join(

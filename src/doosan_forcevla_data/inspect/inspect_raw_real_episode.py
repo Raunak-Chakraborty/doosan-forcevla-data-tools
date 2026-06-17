@@ -657,6 +657,7 @@ def inspect_raw_real_episode(
     root = Path(episode_dir)
     validation = validate_raw_real_episode(root)
     metadata, metadata_errors = _read_json_object(root / "metadata.json", "metadata")
+    calibration_refs, calibration_errors = _read_json_object(root / "calibration_refs.json", "calibration_refs")
     recorder_report, recorder_errors = _read_json_object(root / "recorder_report.json", "recorder_report")
     streams_index, streams_index_errors = _read_json_object(root / "streams" / "index.json", "streams/index")
     streams = streams_index.get("streams") if isinstance(streams_index, dict) else None
@@ -706,6 +707,8 @@ def inspect_raw_real_episode(
         streams_index,
         streams,
         records_by_stream,
+        root_dir=root,
+        calibration_refs=calibration_refs,
     )
 
     conversion_blockers = _conversion_blockers(
@@ -719,7 +722,14 @@ def inspect_raw_real_episode(
         conversion_readiness_errors,
     )
     ready_for_conversion = validation.ok and not conversion_blockers
-    inspection_errors = metadata_errors + recorder_errors + streams_index_errors + stream_read_errors + event_read_errors
+    inspection_errors = (
+        metadata_errors
+        + calibration_errors
+        + recorder_errors
+        + streams_index_errors
+        + stream_read_errors
+        + event_read_errors
+    )
     errors = _unique_strings(list(validation.errors) + inspection_errors + conversion_blockers)
     warnings = _unique_strings(list(validation.warnings))
 

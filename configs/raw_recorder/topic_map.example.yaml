@@ -23,18 +23,24 @@ topics:
     source_type: tf2_msgs/msg/TFMessage
     required: true
     verified: false
-  external_camera:
+  tcp_camera:
     source_name: unknown
     source_type: sensor_msgs/msg/Image
     required: true
     verified: false
-    notes: Real external camera topic, encoding, frame_id, QoS, FPS, and resolution are unknown.
-  wrist_camera:
+    notes: Real TCP camera topic, encoding, frame_id, QoS, FPS, and resolution are unknown.
+  external_camera_1:
     source_name: unknown
     source_type: sensor_msgs/msg/Image
     required: true
     verified: false
-    notes: Real wrist/TCP camera topic, encoding, frame_id, QoS, FPS, and resolution are unknown.
+    notes: Real primary external camera topic, encoding, frame_id, QoS, FPS, and resolution are unknown.
+  external_camera_2:
+    source_name: unknown
+    source_type: sensor_msgs/msg/Image
+    required: true
+    verified: false
+    notes: Real secondary external camera topic, encoding, frame_id, QoS, FPS, and resolution are unknown.
   commanded_teleop_twist:
     source_name: /doosan_teleop/cmd_vel_6d
     source_type: geometry_msgs/msg/Twist
@@ -76,6 +82,7 @@ services:
     required: false
     read_only_candidate: true
     verified: false
+    notes: Legacy/candidate auxiliary source only. Prefer RobotStateRt-derived tcp_wrench when verified.
   gripper_state:
     source_name: unknown
     source_type: unknown

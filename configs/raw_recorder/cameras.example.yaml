@@ -3,8 +3,11 @@
 schema_version: raw_camera_streams_v0
 
 streams:
-  external_camera:
-    role: observation.image
+  tcp_camera:
+    type: camera_rgb
+    role: tcp_camera
+    model_input_key: tcp_rgb_path
+    used_for_model: true
     source_name: unknown
     source_type: sensor_msgs/msg/Image
     required: true
@@ -17,9 +20,13 @@ streams:
     camera_id: unknown
     intrinsics_id: unknown
     extrinsics_id: unknown
-    notes: External camera topic, frame, calibration, timestamp source, and QoS are unverified.
-  wrist_camera:
-    role: observation.wrist_image
+    notes: TCP camera topic, frame, calibration, timestamp source, and QoS are unverified.
+  external_camera_1:
+    type: camera_rgb
+    role: external_camera
+    external_camera_id: "1"
+    model_input_key: external_rgb_path
+    used_for_model: true
     source_name: unknown
     source_type: sensor_msgs/msg/Image
     required: true
@@ -32,7 +39,29 @@ streams:
     camera_id: unknown
     intrinsics_id: unknown
     extrinsics_id: unknown
-    notes: Wrist/TCP camera topic, frame, calibration, timestamp source, and QoS are unverified.
+    notes: Primary external camera for compact ForceVLA export; topic, frame, calibration, timestamp source, and QoS are unverified.
+  external_camera_2:
+    type: camera_rgb
+    role: external_camera
+    external_camera_id: "2"
+    used_for_model: false
+    source_name: unknown
+    source_type: sensor_msgs/msg/Image
+    required: true
+    verified: false
+    encoding: unknown
+    expected_width: null
+    expected_height: null
+    expected_fps: null
+    frame_id: unknown
+    camera_id: unknown
+    intrinsics_id: unknown
+    extrinsics_id: unknown
+    notes: Secondary external camera may be recorded and validated but is not a ForceVLA 13D input unless explicitly mapped.
+
+legacy_aliases:
+  wrist_camera: tcp_camera
+  external_camera: external_camera_1
 
 storage:
   first_choice: image_frames_with_index

@@ -37,15 +37,24 @@ flange_pose_source:
   notes: Optional audit source for TCP/flange/tool ambiguity.
 
 wrench_source:
-  kind: unknown
-  selected: false
-  source_name: unknown
+  kind: robot_state_rt.tcp_wrench
+  selected: true
+  source_name: doosan_internal_tcp_ft
+  source_type: doosan_internal
   verified: false
+  order: [Fx, Fy, Fz, Tx, Ty, Tz]
+  force_unit: N
+  torque_unit: Nm
+  frame: tcp_frame
+  compensation: doosan_internal
+  approved_for_model_state: false
   candidates:
+    - robot_state_rt.tcp_wrench
+    - robot_state_rt.measured_tcp_wrench
     - robot_state_rt.external_tcp_force
     - robot_state_rt.raw_force_torque
     - aux_control/get_tool_force
-  reason: Force-torque frame, sign convention, filtering, and compensation are unknown.
+  reason: Thesis target is Doosan M1013 internal TCP force/torque; frame, sign convention, filtering, and compensation still require lab verification before approved_for_model_state can be true.
 
 robot_mode_state_source:
   kind: robot_state_rt

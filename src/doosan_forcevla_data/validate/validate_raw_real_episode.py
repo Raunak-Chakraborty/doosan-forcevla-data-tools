@@ -39,8 +39,44 @@ JSONL_STREAM_NAMES = {
     "gripper_state",
 }
 
-CAMERA_STREAM_NAMES = {"external_camera", "wrist_camera"}
-CONVERTER_REQUIRED_ALIGNMENT_STREAMS = ["joint_states", "external_camera", "wrist_camera"]
+KNOWN_CAMERA_STREAM_NAMES = {
+    "tcp_camera",
+    "external_camera_1",
+    "external_camera_2",
+    "external_camera",
+    "wrist_camera",
+}
+CAMERA_STREAM_KIND_VALUES = {"camera_rgb", "camera_images", "rgb_camera", "camera"}
+MODEL_EXTERNAL_IMAGE_KEY = "external_rgb_path"
+MODEL_TCP_IMAGE_KEY = "tcp_rgb_path"
+MODEL_CAMERA_OUTPUT_KEYS = [MODEL_EXTERNAL_IMAGE_KEY, MODEL_TCP_IMAGE_KEY]
+MODEL_CAMERA_MAPPING_KEYS = [
+    "model_camera_mapping",
+    "model_input_cameras",
+    "camera_mapping",
+    "selected_camera_streams",
+]
+EXTERNAL_CAMERA_MAPPING_KEYS = {
+    "external_rgb_path",
+    "observation.image",
+    "observation_image",
+    "external_camera",
+    "external_camera_1",
+    "external",
+    "model_external_camera",
+}
+TCP_CAMERA_MAPPING_KEYS = {
+    "tcp_rgb_path",
+    "observation.wrist_image",
+    "observation_wrist_image",
+    "wrist_image",
+    "tcp_camera",
+    "wrist_camera",
+    "tcp",
+    "wrist",
+    "model_tcp_camera",
+}
+CONVERTER_REQUIRED_ALIGNMENT_STREAMS = ["joint_states"]
 CONVERTER_ALIGNED_OPTIONAL_STREAMS = ["gripper_state"]
 ROTATION_VECTOR_DEGREES = "rotation_vector_degrees"
 ROTATION_VECTOR_RADIANS = "rotation_vector_radians"
@@ -57,25 +93,37 @@ UNSUPPORTED_TCP_ORIENTATION_CONVENTIONS = {
     "doosan_robotstate_actual_tcp_position_euler_zyz_degrees",
     "euler_zyz_degrees",
 }
-EXPLICIT_SYNTHETIC_COLLECTION_METHODS = {"synthetic_raw_real", "synthetic_raw_real_fixture"}
-EXPLICIT_SYNTHETIC_RECORDER_VERSIONS = {"synthetic_raw_real_generator_v0"}
+EXPLICIT_SYNTHETIC_COLLECTION_METHODS = {
+    "synthetic_raw_real",
+    "synthetic_raw_real_fixture",
+    "pipeline_smoke",
+    "pipeline_smoke_raw_real",
+}
+EXPLICIT_SYNTHETIC_RECORDER_VERSIONS = {"synthetic_raw_real_generator_v0", "pipeline_smoke_raw_real_generator_v0"}
 SOURCE_STAMP_SECONDS_UNIT = "seconds"
 
+WRENCH_SOURCE_FIELDS = ["tcp_wrench", "measured_tcp_wrench", "external_tcp_force", "raw_force_torque"]
 WRENCH_MODEL_STATE_ORDER = ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"]
 WRENCH_FORCE_UNIT = "N"
 WRENCH_TORQUE_UNIT = "Nm"
-SUPPORTED_WRENCH_FRAMES = {"base", "flange"}
+SUPPORTED_WRENCH_FRAMES = {"base", "base_frame", "flange", "flange_frame", "tcp", "tcp_frame", "tool", "tool_frame"}
 SUPPORTED_WRENCH_COMPENSATION = {
+    "doosan_internal",
     "estimated_external_tcp_force",
     "raw_flange_sensor",
     "gravity_compensated",
     "not_gravity_compensated",
+    "raw",
+    "unknown",
+}
+PLACEHOLDER_GRIPPER_SOURCE_NAMES = {
+    "synthetic_constant_pending_gripper_integration",
+    "pipeline_smoke_constant_gripper",
+    "synthetic_gripper_state",
 }
 
 STRICT_LAB_PROVENANCE_KEYS = [
     "exact_doosan_namespace",
-    "external_camera_topic",
-    "wrist_camera_topic",
     "read_data_rt_service",
     "tcp_frame",
     "flange_frame",
@@ -114,11 +162,7 @@ DEGREE_UNITS = {"deg", "degree", "degrees"}
 RADIAN_UNITS = {"rad", "radian", "radians"}
 
 CALIBRATION_REF_ID_KEYS = ("id", "calibration_id", "reference_id", "ref", "reference", "name")
-REQUIRED_CALIBRATION_REF_PATHS = [
-    ("camera_intrinsics.external_camera", ("camera_intrinsics", "external_camera")),
-    ("camera_extrinsics.external_camera", ("camera_extrinsics", "external_camera")),
-    ("camera_intrinsics.wrist_camera", ("camera_intrinsics", "wrist_camera")),
-    ("camera_extrinsics.wrist_camera", ("camera_extrinsics", "wrist_camera")),
+REQUIRED_NON_CAMERA_CALIBRATION_REF_PATHS = [
     ("tcp_tool_calibration", ("tcp_tool_calibration",)),
     ("force_torque_calibration", ("force_torque_calibration",)),
 ]
@@ -164,6 +208,244 @@ def _normalized_unit(units: dict[str, Any], key: str) -> str | None:
     if not isinstance(value, str) or not value.strip():
         return None
     return value.strip().lower().replace(" ", "_")
+
+
+def _normalized_label(value: Any) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _unique_strings(values: list[str]) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        unique.append(value)
+    return unique
+
+
+def is_camera_stream_entry(stream_name: str, entry: Any) -> bool:
+    if stream_name in KNOWN_CAMERA_STREAM_NAMES:
+        return True
+    if not isinstance(entry, dict):
+        return False
+    for key in ["type", "stream_type", "kind"]:
+        if _normalized_label(entry.get(key)) in CAMERA_STREAM_KIND_VALUES:
+            return True
+    role_values = [
+        entry.get("role"),
+        entry.get("camera_role"),
+        entry.get("source_role"),
+        entry.get("model_role"),
+    ]
+    return any(_camera_target_from_role(role) is not None for role in role_values)
+
+
+def camera_stream_names(streams: dict[str, Any] | None) -> list[str]:
+    if not isinstance(streams, dict):
+        return []
+    return sorted(name for name, entry in streams.items() if is_camera_stream_entry(name, entry))
+
+
+def _camera_target_from_mapping_key(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = _normalized_label(value)
+    if normalized in {_normalized_label(key) for key in EXTERNAL_CAMERA_MAPPING_KEYS}:
+        return MODEL_EXTERNAL_IMAGE_KEY
+    if normalized in {_normalized_label(key) for key in TCP_CAMERA_MAPPING_KEYS}:
+        return MODEL_TCP_IMAGE_KEY
+    return None
+
+
+def _camera_target_from_role(value: Any) -> str | None:
+    normalized = _normalized_label(value)
+    if normalized is None:
+        return None
+    if normalized in {"tcp_camera", "wrist_camera", "tcp", "wrist"}:
+        return MODEL_TCP_IMAGE_KEY
+    if normalized in {"external_camera", "external", "external_camera_1", "external_rgb"}:
+        return MODEL_EXTERNAL_IMAGE_KEY
+    return None
+
+
+def _camera_target_from_stream_name(stream_name: str) -> str | None:
+    if stream_name in {"tcp_camera", "wrist_camera"}:
+        return MODEL_TCP_IMAGE_KEY
+    if stream_name == "external_camera" or stream_name.startswith("external_camera_"):
+        return MODEL_EXTERNAL_IMAGE_KEY
+    return None
+
+
+def _camera_target_for_inference(stream_name: str, entry: dict[str, Any]) -> str | None:
+    for key in ["model_input_key", "model_key"]:
+        target = _camera_target_from_mapping_key(entry.get(key))
+        if target is not None:
+            return target
+    for key in ["role", "camera_role", "source_role", "model_role"]:
+        target = _camera_target_from_role(entry.get(key))
+        if target is not None:
+            return target
+    return _camera_target_from_stream_name(stream_name)
+
+
+def _mapping_stream_name(value: Any) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, dict):
+        for key in ["stream", "stream_name", "source_stream", "raw_stream", "name"]:
+            nested = value.get(key)
+            if isinstance(nested, str) and nested.strip():
+                return nested.strip()
+    return None
+
+
+def _add_explicit_camera_assignment(
+    assignments: dict[str, tuple[str, str]],
+    errors: list[str],
+    *,
+    target: str,
+    stream_name: str,
+    source: str,
+    camera_names: set[str],
+) -> None:
+    if stream_name not in camera_names:
+        errors.append(
+            f"camera mapping: {source} selects stream {stream_name!r}, but it is not a declared camera stream"
+        )
+        return
+    previous = assignments.get(target)
+    if previous is not None and previous[0] != stream_name:
+        errors.append(
+            f"camera mapping: conflicting selections for {target}: {previous[0]!r} from {previous[1]}, "
+            f"and {stream_name!r} from {source}"
+        )
+        return
+    assignments[target] = (stream_name, source)
+
+
+def _collect_explicit_camera_assignments(
+    metadata: dict[str, Any] | None,
+    streams_index: dict[str, Any] | None,
+    streams: dict[str, Any],
+    camera_names: set[str],
+) -> tuple[dict[str, tuple[str, str]], list[str]]:
+    assignments: dict[str, tuple[str, str]] = {}
+    errors: list[str] = []
+    containers = [("metadata", metadata), ("streams/index.json", streams_index)]
+
+    for container_label, container in containers:
+        if not isinstance(container, dict):
+            continue
+        for mapping_key in MODEL_CAMERA_MAPPING_KEYS:
+            mapping = container.get(mapping_key)
+            if not isinstance(mapping, dict):
+                continue
+            for raw_target, raw_value in mapping.items():
+                target = _camera_target_from_mapping_key(raw_target)
+                stream_name = _mapping_stream_name(raw_value)
+                source = f"{container_label}.{mapping_key}.{raw_target}"
+                if target is None:
+                    continue
+                if stream_name is None:
+                    errors.append(f"camera mapping: {source} must name a camera stream")
+                    continue
+                _add_explicit_camera_assignment(
+                    assignments,
+                    errors,
+                    target=target,
+                    stream_name=stream_name,
+                    source=source,
+                    camera_names=camera_names,
+                )
+
+    for stream_name, entry in streams.items():
+        if stream_name not in camera_names or not isinstance(entry, dict):
+            continue
+        for key in ["model_input_key", "model_key"]:
+            target = _camera_target_from_mapping_key(entry.get(key))
+            if target is not None:
+                _add_explicit_camera_assignment(
+                    assignments,
+                    errors,
+                    target=target,
+                    stream_name=stream_name,
+                    source=f"streams/index.json streams.{stream_name}.{key}",
+                    camera_names=camera_names,
+                )
+        if entry.get("used_for_model") is True:
+            target = None
+            for key in ["role", "camera_role", "source_role", "model_role"]:
+                target = _camera_target_from_role(entry.get(key))
+                if target is not None:
+                    break
+            if target is None:
+                target = _camera_target_from_stream_name(stream_name)
+            if target is None:
+                errors.append(
+                    f"camera mapping: streams/index.json streams.{stream_name}.used_for_model=true "
+                    "requires role/model_input_key identifying external or tcp model image use"
+                )
+            else:
+                _add_explicit_camera_assignment(
+                    assignments,
+                    errors,
+                    target=target,
+                    stream_name=stream_name,
+                    source=f"streams/index.json streams.{stream_name}.used_for_model",
+                    camera_names=camera_names,
+                )
+    return assignments, errors
+
+
+def select_model_camera_streams(
+    metadata: dict[str, Any] | None,
+    streams_index: dict[str, Any] | None,
+    streams: dict[str, Any] | None,
+) -> tuple[dict[str, str], list[str], dict[str, str]]:
+    """Select raw camera streams for processed external/tcp image compatibility keys."""
+
+    if not isinstance(streams, dict):
+        return {}, ["camera mapping: streams/index.json streams must be a JSON object"], {}
+
+    camera_names_list = camera_stream_names(streams)
+    camera_names = set(camera_names_list)
+    if not camera_names:
+        return {}, ["camera mapping: at least one declared camera_rgb stream is required"], {}
+
+    assignments, errors = _collect_explicit_camera_assignments(metadata, streams_index, streams, camera_names)
+    selected: dict[str, str] = {}
+    selection_sources: dict[str, str] = {}
+
+    for target in MODEL_CAMERA_OUTPUT_KEYS:
+        if target in assignments:
+            selected[target], selection_sources[target] = assignments[target]
+            continue
+
+        candidates = [
+            name
+            for name in camera_names_list
+            if isinstance(streams.get(name), dict) and _camera_target_for_inference(name, streams[name]) == target
+        ]
+        if len(candidates) == 1:
+            selected[target] = candidates[0]
+            selection_sources[target] = "unambiguous legacy/name/role fallback"
+            continue
+        if not candidates:
+            errors.append(
+                f"camera mapping: no camera stream selected for {target}; provide metadata.model_camera_mapping "
+                "or a camera stream model_input_key"
+            )
+        else:
+            errors.append(
+                f"camera mapping: multiple candidate streams for {target}: {candidates!r}; provide explicit "
+                "metadata.model_camera_mapping or stream model_input_key instead of guessing"
+            )
+
+    return selected, errors, selection_sources
 
 
 def _combined_units(record: dict[str, Any] | None, stream_entry: dict[str, Any] | None) -> dict[str, Any]:
@@ -284,6 +566,27 @@ def _strict_lab_provenance_required(
     return False
 
 
+def _camera_topic_provenance_value(live_graph: dict[str, Any], stream_name: str) -> Any:
+    camera_topics = live_graph.get("camera_topics")
+    if isinstance(camera_topics, dict) and stream_name in camera_topics:
+        return camera_topics.get(stream_name)
+    direct_key = f"{stream_name}_topic"
+    if direct_key in live_graph:
+        return live_graph.get(direct_key)
+    legacy_key = None
+    if stream_name == "tcp_camera":
+        legacy_key = "wrist_camera_topic"
+    elif stream_name == "external_camera_1":
+        legacy_key = "external_camera_topic"
+    elif stream_name == "wrist_camera":
+        legacy_key = "wrist_camera_topic"
+    elif stream_name == "external_camera":
+        legacy_key = "external_camera_topic"
+    if legacy_key is not None:
+        return live_graph.get(legacy_key)
+    return None
+
+
 def _strict_lab_provenance_errors(
     metadata: dict[str, Any] | None,
     recorder_report: dict[str, Any] | None,
@@ -321,6 +624,12 @@ def _strict_lab_provenance_errors(
         for key in STRICT_LAB_PROVENANCE_KEYS:
             if _is_unknown_provenance_value(live_graph.get(key)):
                 errors.append(f"strict lab provenance: metadata.live_graph_verification.{key} must be known")
+        for stream_name in camera_stream_names(streams):
+            if _is_unknown_provenance_value(_camera_topic_provenance_value(live_graph, stream_name)):
+                errors.append(
+                    f"strict lab provenance: metadata.live_graph_verification camera topic for {stream_name} "
+                    "must be known (camera_topics mapping or <stream_name>_topic)"
+                )
 
     if isinstance(streams, dict):
         for stream_name, entry in streams.items():
@@ -331,7 +640,7 @@ def _strict_lab_provenance_errors(
             if _is_unknown_provenance_value(entry.get("source_name")):
                 errors.append(f"strict lab provenance: stream {stream_name} source_name must be known")
 
-    for stream_name in sorted(CAMERA_STREAM_NAMES):
+    for stream_name in camera_stream_names(streams):
         for idx, record in enumerate(records_by_stream.get(stream_name, [])):
             if _is_unknown_provenance_value(record.get("frame_id")):
                 errors.append(f"strict lab provenance: {stream_name} camera record {idx} frame_id must be known")
@@ -368,9 +677,13 @@ def _decode_image_shape(path: Path) -> tuple[int, int, int] | str:
     return int(width), int(height), int(channels)
 
 
-def _camera_image_decodability_errors(root: Path, records_by_stream: dict[str, list[dict[str, Any]]]) -> list[str]:
+def _camera_image_decodability_errors(
+    root: Path,
+    records_by_stream: dict[str, list[dict[str, Any]]],
+    camera_streams: list[str],
+) -> list[str]:
     errors: list[str] = []
-    for stream_name in sorted(CAMERA_STREAM_NAMES):
+    for stream_name in camera_streams:
         for idx, record in enumerate(records_by_stream.get(stream_name, [])):
             image_path_value = record.get("image_path")
             if not isinstance(image_path_value, str) or not image_path_value:
@@ -427,12 +740,20 @@ def _is_meaningful_calibration_ref(value: Any) -> bool:
     return False
 
 
-def _calibration_refs_readiness_errors(calibration_refs: dict[str, Any] | None) -> list[str]:
+def _calibration_refs_readiness_errors(
+    calibration_refs: dict[str, Any] | None,
+    camera_streams: list[str],
+) -> list[str]:
     if not isinstance(calibration_refs, dict):
         return ["calibration_refs: must be a JSON object for non-synthetic conversion"]
 
     errors: list[str] = []
-    for display_path, path in REQUIRED_CALIBRATION_REF_PATHS:
+    required_paths = list(REQUIRED_NON_CAMERA_CALIBRATION_REF_PATHS)
+    for stream_name in camera_streams:
+        required_paths.append((f"camera_intrinsics.{stream_name}", ("camera_intrinsics", stream_name)))
+        required_paths.append((f"camera_extrinsics.{stream_name}", ("camera_extrinsics", stream_name)))
+
+    for display_path, path in required_paths:
         exists, value = _nested_value(calibration_refs, path)
         if not exists:
             errors.append(f"calibration_refs.{display_path} is required for non-synthetic conversion")
@@ -444,10 +765,9 @@ def _calibration_refs_readiness_errors(calibration_refs: dict[str, Any] | None) 
     return errors
 
 def _selected_wrench_source(record: dict[str, Any]) -> str | None:
-    if _is_numeric_list(record.get("external_tcp_force"), 6):
-        return "external_tcp_force"
-    if _is_numeric_list(record.get("raw_force_torque"), 6):
-        return "raw_force_torque"
+    for source in WRENCH_SOURCE_FIELDS:
+        if _is_numeric_list(record.get(source), 6):
+            return source
     return None
 
 
@@ -510,7 +830,7 @@ def _validated_wrench_metadata(source: str, metadata: dict[str, Any], errors: li
 
     if not valid:
         return None
-    return {
+    validated = {
         "order": list(WRENCH_MODEL_STATE_ORDER),
         "force_unit": force_unit,
         "torque_unit": torque_unit,
@@ -518,6 +838,11 @@ def _validated_wrench_metadata(source: str, metadata: dict[str, Any], errors: li
         "compensation": compensation,
         "approved_for_model_state": True,
     }
+    for optional_key in ["source_name", "source_type", "source_service_or_topic"]:
+        value = metadata.get(optional_key)
+        if isinstance(value, str) and value.strip():
+            validated[optional_key] = value
+    return validated
 
 
 def selected_wrench_metadata_for_model_state(
@@ -662,8 +987,11 @@ def _source_stamp_seconds(value: Any) -> float | None:
     return float(sec) + float(nanosec) * 1e-9
 
 
-def _required_streams_use_numeric_source_stamp(records_by_stream: dict[str, list[dict[str, Any]]]) -> bool:
-    for stream_name in REQUIRED_STREAM_NAMES:
+def _required_streams_use_numeric_source_stamp(
+    records_by_stream: dict[str, list[dict[str, Any]]],
+    camera_streams: list[str],
+) -> bool:
+    for stream_name in REQUIRED_STREAM_NAMES + camera_streams:
         for record in records_by_stream.get(stream_name, []):
             if _is_finite_number(record.get("source_stamp")):
                 return True
@@ -673,8 +1001,9 @@ def _required_streams_use_numeric_source_stamp(records_by_stream: dict[str, list
 def _numeric_source_stamp_timebase_errors(
     streams_index: dict[str, Any] | None,
     records_by_stream: dict[str, list[dict[str, Any]]],
+    camera_streams: list[str],
 ) -> list[str]:
-    if not _required_streams_use_numeric_source_stamp(records_by_stream):
+    if not _required_streams_use_numeric_source_stamp(records_by_stream, camera_streams):
         return []
 
     timebase = streams_index.get("timebase") if isinstance(streams_index, dict) else None
@@ -836,6 +1165,37 @@ def _validate_optional_stream_entry(
     return _stream_path(root, stream_name, entry, errors)
 
 
+def _validate_camera_stream_entry(
+    root: Path,
+    stream_name: str,
+    entry: Any,
+    errors: list[str],
+) -> Path | None:
+    if not isinstance(entry, dict):
+        errors.append(f"streams/index.json: camera stream {stream_name} entry must be a JSON object")
+        return None
+
+    source_name = entry.get("source_name")
+    if not isinstance(source_name, str) or not source_name:
+        errors.append(f"streams/index.json: camera stream {stream_name} missing non-empty source_name")
+
+    source_type = entry.get("source_type")
+    if not isinstance(source_type, str) or not source_type:
+        errors.append(f"streams/index.json: camera stream {stream_name} missing non-empty source_type")
+
+    if "required" in entry and not isinstance(entry.get("required"), bool):
+        errors.append(f"streams/index.json: camera stream {stream_name} required must be a boolean when present")
+
+    if not _is_non_negative_int(entry.get("record_count")):
+        errors.append(f"streams/index.json: camera stream {stream_name} record_count must be a non-negative integer")
+
+    for key in ["type", "stream_type", "kind", "role", "camera_role", "camera_id", "external_camera_id", "model_input_key"]:
+        if key in entry and (not isinstance(entry.get(key), str) or not entry.get(key)):
+            errors.append(f"streams/index.json: camera stream {stream_name} {key} must be a non-empty string when present")
+
+    return _stream_path(root, stream_name, entry, errors)
+
+
 def _add_stream_warnings(streams: dict[str, Any], warnings: list[str]) -> None:
     for stream_name in OPTIONAL_STREAM_NAMES:
         if stream_name not in streams:
@@ -881,14 +1241,13 @@ def _validate_robot_state_rt(records: list[dict[str, Any]], path: Path, errors: 
         context = f"{path}: robot_state_rt record {idx}"
         _check_numeric_list(record, "actual_tcp_position", 6, context, errors)
 
-        has_external_tcp_force = "external_tcp_force" in record
-        has_raw_force_torque = "raw_force_torque" in record
-        if not has_external_tcp_force and not has_raw_force_torque:
-            errors.append(f"{context}: external_tcp_force or raw_force_torque must exist")
-        if has_external_tcp_force:
-            _check_numeric_list(record, "external_tcp_force", 6, context, errors)
-        if has_raw_force_torque:
-            _check_numeric_list(record, "raw_force_torque", 6, context, errors)
+        present_wrench_fields = [field for field in WRENCH_SOURCE_FIELDS if field in record]
+        if not present_wrench_fields:
+            errors.append(
+                f"{context}: tcp_wrench, measured_tcp_wrench, external_tcp_force, or raw_force_torque must exist"
+            )
+        for field in present_wrench_fields:
+            _check_numeric_list(record, field, 6, context, errors)
 
         for key in ["robot_mode", "robot_state", "control_mode"]:
             if not _is_non_empty_string(record.get(key)):
@@ -1038,6 +1397,10 @@ def _validate_camera_index(
             if not isinstance(record.get(key), str) or not record.get(key):
                 errors.append(f"{context}: {key} must be a non-empty string")
 
+        for key in ["camera_role", "camera_id", "external_camera_id"]:
+            if key in record and (not isinstance(record.get(key), str) or not record.get(key)):
+                errors.append(f"{context}: {key} must be a non-empty string when present")
+
     return records
 
 
@@ -1103,6 +1466,7 @@ def _alignment_details(primary_indexes: set[int], candidate_indexes: set[int]) -
 
 def _check_record_index_alignment(
     records_by_stream: dict[str, list[dict[str, Any]]],
+    camera_streams: list[str],
     errors: list[str],
     warnings: list[str],
 ) -> None:
@@ -1111,7 +1475,7 @@ def _check_record_index_alignment(
     if not primary_indexes:
         return
 
-    for stream_name in CONVERTER_REQUIRED_ALIGNMENT_STREAMS:
+    for stream_name in CONVERTER_REQUIRED_ALIGNMENT_STREAMS + camera_streams:
         if stream_name not in records_by_stream:
             continue
         candidate_indexes = _record_index_set(records_by_stream[stream_name])
@@ -1235,13 +1599,14 @@ def _source_stamp_alignment_errors(
     records_by_stream: dict[str, list[dict[str, Any]]],
     metadata: dict[str, Any] | None,
     streams_index: dict[str, Any] | None,
+    camera_streams: list[str],
 ) -> list[str]:
     tolerance, tolerance_source, errors, _ = _camera_robot_source_stamp_tolerance_policy(metadata, streams_index)
     robot_by_index = _records_by_index(records_by_stream.get("robot_state_rt", []))
     if not robot_by_index:
         return errors
 
-    for stream_name in ["external_camera", "wrist_camera"]:
+    for stream_name in camera_streams:
         stream_by_index = _records_by_index(records_by_stream.get(stream_name, []))
         common_indexes = sorted(set(robot_by_index) & set(stream_by_index))
         for record_index in common_indexes:
@@ -1261,7 +1626,41 @@ def _source_stamp_alignment_errors(
     return errors
 
 
-def _gripper_state_readiness_errors(records_by_stream: dict[str, list[dict[str, Any]]]) -> list[str]:
+def _is_placeholder_gripper_value(value: Any) -> bool:
+    normalized = _normalized_label(value)
+    if normalized is None:
+        return False
+    return normalized in PLACEHOLDER_GRIPPER_SOURCE_NAMES or (
+        ("synthetic" in normalized or "pipeline_smoke" in normalized) and "gripper" in normalized
+    )
+
+
+def _gripper_placeholder_sources(
+    streams: dict[str, Any] | None,
+    records: list[dict[str, Any]],
+) -> list[str]:
+    sources: list[str] = []
+    entry = streams.get("gripper_state") if isinstance(streams, dict) else None
+    if isinstance(entry, dict):
+        for key in ["source_name", "source_type"]:
+            value = entry.get(key)
+            if _is_placeholder_gripper_value(value) and isinstance(value, str):
+                sources.append(f"streams.gripper_state.{key}={value}")
+        if entry.get("placeholder") is True or entry.get("synthetic_placeholder") is True:
+            sources.append("streams.gripper_state.placeholder=true")
+    for record_index, record in enumerate(records):
+        for key in ["source_name", "source_type"]:
+            value = record.get(key)
+            if _is_placeholder_gripper_value(value) and isinstance(value, str):
+                sources.append(f"gripper_state record {record_index} {key}={value}")
+                break
+    return _unique_strings(sources)
+
+
+def _gripper_state_readiness_errors(
+    records_by_stream: dict[str, list[dict[str, Any]]],
+    streams: dict[str, Any] | None,
+) -> list[str]:
     robot_indexes = _record_index_set(records_by_stream.get("robot_state_rt", []))
     if not robot_indexes:
         return []
@@ -1274,6 +1673,13 @@ def _gripper_state_readiness_errors(records_by_stream: dict[str, list[dict[str, 
         ]
 
     errors: list[str] = []
+    placeholder_sources = _gripper_placeholder_sources(streams, gripper_records)
+    if placeholder_sources:
+        errors.append(
+            "gripper_state uses synthetic/pipeline-smoke placeholder source metadata that is allowed only for "
+            "explicit synthetic or pipeline-smoke episodes, not non-synthetic real training data: "
+            + ", ".join(placeholder_sources[:5])
+        )
     gripper_by_index = _records_by_index(gripper_records)
     gripper_indexes = set(gripper_by_index)
     if gripper_indexes != robot_indexes:
@@ -1304,21 +1710,24 @@ def raw_real_conversion_readiness_errors(
 ) -> list[str]:
     """Return validator errors for raw_real_v0 data the converter would reject."""
 
-    errors = _source_stamp_alignment_errors(records_by_stream, metadata, streams_index)
+    camera_streams = camera_stream_names(streams)
+    errors = _source_stamp_alignment_errors(records_by_stream, metadata, streams_index, camera_streams)
+    _, camera_mapping_errors, _ = select_model_camera_streams(metadata, streams_index, streams)
+    errors.extend(camera_mapping_errors)
     if is_explicit_synthetic_episode(metadata, recorder_report, streams_index):
         return errors
 
     if root_dir is None:
         errors.append("raw-real episode root is required to verify non-synthetic camera image decodability")
     else:
-        errors.extend(_camera_image_decodability_errors(Path(root_dir), records_by_stream))
+        errors.extend(_camera_image_decodability_errors(Path(root_dir), records_by_stream, camera_streams))
 
-    errors.extend(_calibration_refs_readiness_errors(calibration_refs))
+    errors.extend(_calibration_refs_readiness_errors(calibration_refs, camera_streams))
     if not isinstance(streams, dict):
         return errors
 
-    errors.extend(_numeric_source_stamp_timebase_errors(streams_index, records_by_stream))
-    errors.extend(_gripper_state_readiness_errors(records_by_stream))
+    errors.extend(_numeric_source_stamp_timebase_errors(streams_index, records_by_stream, camera_streams))
+    errors.extend(_gripper_state_readiness_errors(records_by_stream, streams))
 
     convention = _tcp_orientation_convention(metadata, recorder_report)
     convention_error = tcp_orientation_convention_readiness_error(convention)
@@ -1423,6 +1832,7 @@ def _warn_timestamp_mismatches(
     records_by_stream: dict[str, list[dict[str, Any]]],
     metadata: dict[str, Any] | None,
     streams_index: dict[str, Any] | None,
+    camera_streams: list[str],
     warnings: list[str],
 ) -> None:
     robot_by_index = _records_by_index(records_by_stream.get("robot_state_rt", []))
@@ -1433,8 +1843,7 @@ def _warn_timestamp_mismatches(
 
     for stream_name in [
         "joint_states",
-        "external_camera",
-        "wrist_camera",
+        *camera_streams,
         "gripper_state",
     ]:
         stream_by_index = _records_by_index(records_by_stream.get(stream_name, []))
@@ -1501,6 +1910,9 @@ def validate_raw_real_episode(root_dir: str | Path) -> ValidationResult:
         return ValidationResult(False, errors, warnings)
 
     _add_stream_warnings(streams, warnings)
+    declared_camera_streams = camera_stream_names(streams)
+    if not declared_camera_streams:
+        errors.append(f"{streams_index_path}: at least one camera_rgb stream must be declared in streams")
 
     required_stream_paths: dict[str, Path] = {}
     for stream_name in REQUIRED_STREAM_NAMES:
@@ -1519,6 +1931,12 @@ def validate_raw_real_episode(root_dir: str | Path) -> ValidationResult:
         if path is not None and isinstance(streams[stream_name], dict):
             optional_stream_paths[stream_name] = path
 
+    camera_stream_paths: dict[str, Path] = {}
+    for stream_name in declared_camera_streams:
+        path = _validate_camera_stream_entry(root, stream_name, streams[stream_name], errors)
+        if path is not None and isinstance(streams[stream_name], dict):
+            camera_stream_paths[stream_name] = path
+
     records_by_stream: dict[str, list[dict[str, Any]]] = {}
 
     for stream_name, path in required_stream_paths.items():
@@ -1534,7 +1952,9 @@ def validate_raw_real_episode(root_dir: str | Path) -> ValidationResult:
                 warnings,
                 required=True,
             )
-        elif stream_name in CAMERA_STREAM_NAMES:
+    for stream_name, path in camera_stream_paths.items():
+        stream_entry = streams[stream_name]
+        if isinstance(stream_entry, dict):
             records_by_stream[stream_name] = _validate_camera_index(
                 root,
                 path,
@@ -1555,7 +1975,7 @@ def validate_raw_real_episode(root_dir: str | Path) -> ValidationResult:
                 required=False,
             )
 
-    _check_record_index_alignment(records_by_stream, errors, warnings)
+    _check_record_index_alignment(records_by_stream, declared_camera_streams, errors, warnings)
     errors.extend(
         raw_real_conversion_readiness_errors(
             metadata,
@@ -1567,7 +1987,7 @@ def validate_raw_real_episode(root_dir: str | Path) -> ValidationResult:
             calibration_refs=calibration_refs,
         )
     )
-    _warn_timestamp_mismatches(records_by_stream, metadata, streams_index, warnings)
+    _warn_timestamp_mismatches(records_by_stream, metadata, streams_index, declared_camera_streams, warnings)
 
     return ValidationResult(not errors, errors, warnings)
 

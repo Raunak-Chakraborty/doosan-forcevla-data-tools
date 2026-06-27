@@ -8,6 +8,18 @@ Static ROS2 report inspected: `/home/horus/robotics_thesis/lab_myros2_ws/opencod
 
 Current repository head observed locally: `f2a9feb Add multi-episode ForceVLA smoke regression`
 
+## 2026 Raw-Real Contract Update
+
+The current thesis hardware contract records dynamic named camera streams declared in `streams/index.json`, not a fixed two-camera schema. Preferred stream names are `tcp_camera`, `external_camera_1`, and `external_camera_2`. Legacy `wrist_camera` and `external_camera` remain accepted as aliases for old fixtures only, mapping to the TCP image and primary external image respectively.
+
+For compact `forcevla_13d` export, `tcp_rgb_path` should be mapped explicitly to `tcp_camera` and `external_rgb_path` should be mapped explicitly to `external_camera_1` through `model_camera_mapping`, `model_input_key`, or equivalent stream metadata. If more than one external camera is present and no metadata selects the model external camera, the converter must fail instead of guessing. `external_camera_2` may be recorded, validated, and retained in processed metadata without being required by `forcevla_13d`.
+
+The preferred wrench field is `tcp_wrench` with order `[Fx, Fy, Fz, Tx, Ty, Tz]`, `force_unit: N`, `torque_unit: Nm`, and Doosan internal source metadata such as `source_name: doosan_internal_tcp_ft` and `source_type: doosan_internal`. Legacy `external_tcp_force` and `raw_force_torque` are still accepted as fallbacks but should not be the conceptual primary source for Doosan M1013 internal TCP force/torque.
+
+Synthetic and pipeline-smoke episodes may use explicitly marked constant gripper placeholders such as `synthetic_constant_pending_gripper_integration` or `pipeline_smoke_constant_gripper`. Non-synthetic training/conversion readiness still requires aligned finite real gripper records and rejects placeholder gripper metadata.
+
+TCP orientation checks remain strict. Non-synthetic converter-ready episodes must use `rotation_vector_degrees` or `rotation_vector_radians`; Doosan/native Euler ZYZ conventions may be preserved separately but must not be guessed or treated as model-ready orientation.
+
 ## 1. Current Data-Pipeline Capabilities
 
 The current repository is an offline ForceVLA/Doosan data pipeline. It is already organized around raw schema, processed schema, conversion, validation, export staging, LeRobot-style export, and ForceVLA-facing smoke checks.
@@ -113,14 +125,21 @@ episode_YYYYMMDD_HHMMSS_<short_id>/
     tf_static.jsonl
     command_context.jsonl
     gripper_state.jsonl
-    external_camera/
+    tcp_camera/
       index.jsonl
       frames/
         000000.<ext>
         000001.<ext>
       chunks/
         optional_video_or_raw_chunk_files
-    wrist_camera/
+    external_camera_1/
+      index.jsonl
+      frames/
+        000000.<ext>
+        000001.<ext>
+      chunks/
+        optional_video_or_raw_chunk_files
+    external_camera_2/
       index.jsonl
       frames/
         000000.<ext>
@@ -139,8 +158,9 @@ Recommended file roles:
 | `streams/joint_states.jsonl` | Yes | Passive `sensor_msgs/msg/JointState` records or equivalent source records with joint names, positions, velocities, efforts if meaningful, and units. |
 | `streams/tf.jsonl` | Yes | Dynamic TF messages needed to reconstruct frame tree and camera/TCP relationships. |
 | `streams/tf_static.jsonl` | Yes | Static TF messages captured at episode start and whenever refreshed. |
-| `streams/external_camera/` | Yes | External RGB stream, image files or chunks plus `index.jsonl` with exact per-frame timestamps and metadata. |
-| `streams/wrist_camera/` | Yes | Wrist/TCP RGB stream, image files or chunks plus `index.jsonl` with exact per-frame timestamps and metadata. |
+| `streams/tcp_camera/` | Yes | TCP RGB stream, image files or chunks plus `index.jsonl` with exact per-frame timestamps and metadata. Preferred source for processed `tcp_rgb_path`. |
+| `streams/external_camera_1/` | Yes | Primary external RGB stream. Preferred source for processed `external_rgb_path` when explicitly mapped. |
+| `streams/external_camera_2/` | Recommended | Secondary external RGB stream. Recorded and validated when present, but not required by compact `forcevla_13d` unless explicitly mapped. |
 | `streams/command_context.jsonl` | Optional but recommended | Commanded teleop/servo/jog/trajectory context for debugging only. Not the primary action label. |
 | `streams/gripper_state.jsonl` | Required if gripper is used, optional otherwise | Gripper position/state source if available from controller state, action feedback, IO, Modbus, or a separate driver. |
 | `events.jsonl` | Yes | Episode start/stop, task phase labels, contact annotations if available, aborts, errors, success/failure event, and operator annotations. |
@@ -160,7 +180,7 @@ Suggested JSONL record style:
 
 | Common field | Purpose |
 | --- | --- |
-| `record_index` | For converter-ready `raw_real_v0`, an episode-level aligned sample index shared by `robot_state_rt`, `joint_states`, `external_camera`, `wrist_camera`, and aligned optional `gripper_state`. Native per-stream counters should be stored in a separate field if needed. |
+| `record_index` | For converter-ready `raw_real_v0`, an episode-level aligned sample index shared by `robot_state_rt`, `joint_states`, declared camera streams, and aligned optional `gripper_state`. Native per-stream counters should be stored in a separate field if needed. |
 | `source_name` | Exact ROS topic or service name as observed live. |
 | `source_type` | ROS message/service type string or recorder adapter type. |
 | `source_stamp` | Original message header timestamp or controller timestamp when available. |
@@ -172,7 +192,7 @@ Suggested JSONL record style:
 Current `raw_real_v0` conversion alignment policy:
 
 - The raw recorder may capture native sensor timestamps, controller timestamps, receipt times, and native per-stream counters for auditability.
-- Before an episode is converter-ready, `robot_state_rt`, `joint_states`, `external_camera`, `wrist_camera`, and aligned optional `gripper_state` records must carry the same episode-level aligned `record_index` values.
+- Before an episode is converter-ready, `robot_state_rt`, `joint_states`, declared camera streams, and aligned optional `gripper_state` records must carry the same episode-level aligned `record_index` values.
 - `source_stamp` remains the original sensor/source time and is used for synchronization diagnostics.
 - `receipt_stamp` and `monotonic_stamp` remain recorder/debug timing signals.
 - The current converter does not perform timestamp-based alignment, resampling, or interpolation.
@@ -252,7 +272,7 @@ Required wrench/force-torque fields:
 | Field | Requirement |
 | --- | --- |
 | `wrench` | Six values `[Fx, Fy, Fz, Tx, Ty, Tz]`. |
-| `signal_name` | Which signal was used: `raw_force_torque`, `external_tcp_force`, `GetToolForce`, or other verified source. |
+| `signal_name` | Which signal was used: preferred `tcp_wrench` / `measured_tcp_wrench`, legacy `external_tcp_force` / `raw_force_torque`, `GetToolForce`, or other verified source. |
 | `source_name` | Exact source topic/service. No standard `geometry_msgs/WrenchStamped` topic was found by static inspection. |
 | `source_type` | Doosan RT/service type or optional RT topic type. |
 | `frame_id` | Sensor/tool/TCP/base frame for the force-torque values. |
@@ -309,7 +329,7 @@ Required source topic/service names:
 | `source_type` | Exact ROS message/service type for every stream. |
 | `source_namespace` | Resolved namespace, for example `dsr01` if verified. |
 | `source_qos` | QoS profile for high-rate/image streams when available. |
-| `source_role` | Semantic role such as `joint_state`, `tcp_pose`, `external_camera`, `wrist_camera`, `wrench`, or `robot_state`. |
+| `source_role` | Semantic role such as `joint_state`, `tcp_pose`, `tcp_camera`, `external_camera`, `wrench`, or `robot_state`. |
 
 Required units and coordinate frame metadata:
 
@@ -457,7 +477,7 @@ These items are blocked by the live ROS graph, exact real workspace state, and s
 | Exact `RobotStateRt` units and conventions | Confirm joints, TCP pose, flange pose, velocities, force/torque, robot mode/state/control mode, and controller timestamp behavior. |
 | TF tree | Exact base frame, flange frame, TCP/tool frame, camera frames, and static/dynamic transform availability. |
 | TCP/flange/tool choice | Whether action should use controller TCP, flange plus tool offset, or MoveIt end-effector frame. |
-| Force-torque signal choice | Whether `raw_force_torque`, `external_tcp_force`, `GetToolForce`, or another signal is usable for peg-in-hole; frame and sign convention must be validated. |
+| Force-torque signal choice | Whether preferred `tcp_wrench` from Doosan internal TCP F/T is usable for peg-in-hole; legacy `external_tcp_force`, `raw_force_torque`, `GetToolForce`, or another source require the same frame/sign validation. |
 | Gripper state | Model, driver, topic/action/service, state feedback, IO/Modbus mapping, position units, and open/close convention. |
 | Time sync | Synchronization between robot controller, ROS host, cameras, and recorder process; timestamp latency and jitter. |
 | Exact MyROS2 commit/state | Static report found no Git metadata; real branch/commit/remotes/dirty state must be captured from lab source of truth. |
@@ -532,12 +552,17 @@ topics:
     source_type: tf2_msgs/msg/TFMessage
     required: true
     verified: false
-  external_camera:
+  tcp_camera:
     source_name: unknown
     source_type: sensor_msgs/msg/Image
     required: true
     verified: false
-  wrist_camera:
+  external_camera_1:
+    source_name: unknown
+    source_type: sensor_msgs/msg/Image
+    required: true
+    verified: false
+  external_camera_2:
     source_name: unknown
     source_type: sensor_msgs/msg/Image
     required: true
@@ -574,12 +599,20 @@ tcp_pose_source:
   selected: true
   fallback: aux_control/get_current_posx
 wrench_source:
-  kind: robot_state_rt.external_tcp_force
-  selected: false
+  kind: robot_state_rt.tcp_wrench
+  selected: true
+  source_name: doosan_internal_tcp_ft
+  source_type: doosan_internal
+  order: [Fx, Fy, Fz, Tx, Ty, Tz]
+  force_unit: N
+  torque_unit: Nm
+  approved_for_model_state: false
   alternatives:
+    - robot_state_rt.measured_tcp_wrench
+    - robot_state_rt.external_tcp_force
     - robot_state_rt.raw_force_torque
     - aux_control/get_tool_force
-  reason: frame/sign/compensation convention unknown
+  reason: frame/sign/compensation convention must be verified before model approval
 command_context_sources:
   - /doosan_teleop/cmd_vel_6d
   - /dsr01/servo_node/delta_twist_cmds
@@ -591,8 +624,11 @@ Suggested camera stream config: `configs/raw_recorder/cameras.example.yaml`
 ```yaml
 schema_version: raw_camera_streams_v0
 streams:
-  external_camera:
-    role: observation.image
+  tcp_camera:
+    type: camera_rgb
+    role: tcp_camera
+    model_input_key: tcp_rgb_path
+    used_for_model: true
     source_name: unknown
     source_type: sensor_msgs/msg/Image
     required: true
@@ -603,8 +639,27 @@ streams:
     frame_id: unknown
     intrinsics_id: unknown
     extrinsics_id: unknown
-  wrist_camera:
-    role: observation.wrist_image
+  external_camera_1:
+    type: camera_rgb
+    role: external_camera
+    external_camera_id: "1"
+    model_input_key: external_rgb_path
+    used_for_model: true
+    source_name: unknown
+    source_type: sensor_msgs/msg/Image
+    required: true
+    encoding: unknown
+    expected_width: null
+    expected_height: null
+    expected_fps: null
+    frame_id: unknown
+    intrinsics_id: unknown
+    extrinsics_id: unknown
+  external_camera_2:
+    type: camera_rgb
+    role: external_camera
+    external_camera_id: "2"
+    used_for_model: false
     source_name: unknown
     source_type: sensor_msgs/msg/Image
     required: true
@@ -683,8 +738,9 @@ frames:
   tcp_frame: unknown
   flange_frame: unknown
   tool_frame: unknown
-  external_camera_frame: unknown
-  wrist_camera_frame: unknown
+  tcp_camera_frame: unknown
+  external_camera_1_frame: unknown
+  external_camera_2_frame: unknown
 conversion_policy:
   compute_action_from: measured_consecutive_tcp_pose
   record_index_policy: episode_level_aligned_sample_index_for_converter_streams
@@ -707,7 +763,7 @@ The ROS2/Doosan static inspection report leaves several material uncertainties. 
 | Exact camera topics unknown | Static source found `/real_camera/image` as a local OpenCV example and `/rgbd_camera/image` as Gazebo/simulation. No definitive real external or wrist/TCP camera driver/topic was found. | Use live `ros2 topic list -t` and `topic info -v` after safe bringup to identify camera topics, types, encodings, frame IDs, FPS, resolution, QoS, and timestamp source. |
 | Exact Doosan namespace unknown | Likely `/dsr01/joint_states`, but services may resolve as `/dsr01/motion/...` or `/dsr01/<controller_node_name>/motion/...`. | Capture live topic/service/action lists and exact launch arguments. |
 | `ReadDataRt` service availability/rate unknown | Candidate source is `dsr_msgs2/srv/ReadDataRt` returning `dsr_msgs2/msg/RobotStateRt`; static report identifies it as high-value. | Verify service name, safe polling rate, response fields, controller timestamp, load concerns, and read-only safety approval. |
-| Force-torque signal frame/sign convention unknown | Candidate fields include `raw_force_torque`, `external_tcp_force`, and `GetToolForce`; no standard `WrenchStamped` topic was found. | Verify signal source, units, frame, sign convention, filtering, compensation, and suitability for peg-in-hole. |
+| Force-torque signal frame/sign convention unknown | Preferred field is `tcp_wrench` from Doosan internal TCP F/T; legacy candidates include `raw_force_torque`, `external_tcp_force`, and `GetToolForce`. | Verify signal source, units, frame, sign convention, filtering, compensation, and suitability for peg-in-hole. |
 | TCP/flange/tool frame ambiguity | `RobotStateRt` has TCP and flange poses; services expose TCP/flange pose and active TCP/tool names. | Decide whether action uses controller TCP, flange plus tool offset, MoveIt end-effector, or another task frame. Record active TCP/tool config per episode. |
 | Gripper state unknown | Static report found gripper command/action examples and possible IO/Modbus routes, but no definitive state source. | Identify gripper model, state topic/action/service, state units, open/close convention, and whether gripper action slot should be active. |
 | Time sync unknown | Static report cannot determine synchronization between controller, ROS host, cameras, and recorder. | Measure timestamp jitter and offsets with a stationary short recording; decide alignment policy and accepted tolerances. |

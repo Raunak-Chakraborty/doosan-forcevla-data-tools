@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from doosan_forcevla_data.convert.plan_lerobot_export import build_lerobot_export_plan
 from doosan_forcevla_data.convert.raw_real_to_processed import convert_raw_real_to_processed
 from doosan_forcevla_data.dummy.make_synthetic_raw_real_episode import make_synthetic_raw_real_episode
 from doosan_forcevla_data.inspect.inspect_raw_real_episode import inspect_raw_real_episode
@@ -45,6 +46,17 @@ def _shift_camera_source_stamps(episode: Path, offset_sec: float) -> None:
 
 def _valid_wrench_sources_metadata() -> dict:
     return {
+        "tcp_wrench": {
+            "source_name": "doosan_internal_tcp_ft",
+            "source_type": "doosan_internal",
+            "source_service_or_topic": "/dsr01/dsr_controller2/realtime/read_data_rt",
+            "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+            "force_unit": "N",
+            "torque_unit": "Nm",
+            "frame": "tcp_frame",
+            "compensation": "doosan_internal",
+            "approved_for_model_state": True,
+        },
         "external_tcp_force": {
             "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
             "force_unit": "N",
@@ -102,6 +114,13 @@ def _mark_non_synthetic(
             "tool_frame": "tool0",
             "force_torque_source": "robot_state_rt.external_tcp_force",
             "gripper_state_source": "not_available_for_this_episode",
+            "camera_topics": {
+                "tcp_camera": "/tcp_camera/color/image_raw",
+                "external_camera_1": "/external_camera_1/color/image_raw",
+                "external_camera_2": "/external_camera_2/color/image_raw",
+                "external_camera": "/external_camera/color/image_raw",
+                "wrist_camera": "/wrist_camera/color/image_raw",
+            },
             "time_sync_verified": True,
         }
     else:
@@ -147,6 +166,26 @@ def _mark_non_synthetic(
     else:
         robot_entry.pop("wrench_sources", None)
     _write_json(streams_index_path, streams_index)
+
+
+def _mark_gripper_state_real(episode: Path) -> None:
+    streams_index_path = episode / "streams" / "index.json"
+    streams_index = _read_json(streams_index_path)
+    gripper_entry = streams_index["streams"].get("gripper_state")
+    if isinstance(gripper_entry, dict):
+        gripper_entry["source_name"] = "/verified/gripper_state"
+        gripper_entry["source_type"] = "verified_lab_gripper"
+        gripper_entry.pop("placeholder", None)
+        gripper_entry.pop("synthetic_placeholder", None)
+    _write_json(streams_index_path, streams_index)
+
+    gripper_path = episode / "streams" / "gripper_state.jsonl"
+    records = _read_jsonl(gripper_path)
+    for record in records:
+        record["source_name"] = "/verified/gripper_state"
+        record["source_type"] = "verified_lab_gripper"
+        record.pop("placeholder", None)
+    _write_jsonl(gripper_path, records)
 
 
 def _truncate_to_one_aligned_record(episode: Path) -> None:
@@ -218,6 +257,125 @@ class RawRealToProcessedTests(unittest.TestCase):
             self.assertEqual(frames[-1]["measured_action"], [0.0] * ACTION_DIM)
             self.assertTrue(has_nonzero_translation)
             self.assertTrue(has_nonzero_rotation)
+
+    def test_thesis_camera_layout_synthetic_placeholder_gripper_converts_and_exports(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_thesis"
+            processed_episode = root / "processed" / "episode_thesis"
+
+            make_synthetic_raw_real_episode(
+                raw_episode,
+                frame_count=5,
+                include_optional_streams=True,
+                camera_layout="thesis",
+            )
+
+            validation = validate_raw_real_episode(raw_episode)
+            self.assertTrue(validation.ok, validation.errors)
+            output = convert_raw_real_to_processed(raw_episode, processed_episode)
+            self.assertEqual(output, processed_episode)
+            self.assertTrue(validate_processed_episode(processed_episode).ok)
+
+            metadata = _read_json(processed_episode / "metadata_processed.json")
+            self.assertEqual(metadata["camera_mapping"]["tcp_rgb_path"]["raw_stream"], "tcp_camera")
+            self.assertEqual(metadata["camera_mapping"]["external_rgb_path"]["raw_stream"], "external_camera_1")
+            self.assertIn("external_camera_2", metadata["raw_camera_streams"])
+            self.assertEqual(metadata["wrench_source"], ["tcp_wrench"])
+            self.assertEqual(metadata["wrench_source_metadata"]["tcp_wrench"]["source_type"], "doosan_internal")
+
+            report = inspect_raw_real_episode(raw_episode)
+            self.assertTrue(report["schema_valid"], report["errors"])
+            self.assertTrue(report["conversion_ready"], report["errors"])
+            self.assertFalse(report["training_ready"])
+            self.assertFalse(report["real_hardware_verified"])
+
+            manifest = build_lerobot_export_plan(processed_episode, "forcevla_13d")
+            self.assertEqual(manifest["profile"], "forcevla_13d")
+            self.assertEqual(manifest["observation_state_dim"], 13)
+            self.assertEqual(manifest["image_streams"]["observation.image"]["raw_camera_stream"], "external_camera_1")
+            self.assertEqual(manifest["image_streams"]["observation.wrist_image"]["raw_camera_stream"], "tcp_camera")
+
+    def test_ambiguous_external_camera_mapping_fails_instead_of_guessing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_ambiguous"
+            processed_episode = root / "processed" / "episode_ambiguous"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4, camera_layout="thesis")
+
+            streams_path = raw_episode / "streams" / "index.json"
+            streams_index = _read_json(streams_path)
+            streams_index.pop("model_camera_mapping", None)
+            external_1 = streams_index["streams"]["external_camera_1"]
+            external_1.pop("model_input_key", None)
+            external_1["used_for_model"] = False
+            _write_json(streams_path, streams_index)
+
+            validation = validate_raw_real_episode(raw_episode)
+            self.assertFalse(validation.ok)
+            self.assertTrue(any("multiple candidate streams for external_rgb_path" in error for error in validation.errors))
+            with self.assertRaisesRegex(ValueError, "multiple candidate streams for external_rgb_path"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+
+    def test_non_synthetic_placeholder_gripper_is_not_training_ready(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_placeholder_gripper"
+            processed_episode = root / "processed" / "episode_placeholder_gripper"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4, include_optional_streams=True)
+            _mark_non_synthetic(raw_episode, convention="rotation_vector_degrees")
+
+            validation = validate_raw_real_episode(raw_episode)
+            self.assertFalse(validation.ok)
+            self.assertTrue(any("placeholder source metadata" in error for error in validation.errors))
+            report = inspect_raw_real_episode(raw_episode)
+            self.assertFalse(report["training_ready"])
+            self.assertFalse(report["real_hardware_verified"])
+            with self.assertRaisesRegex(ValueError, "placeholder source metadata"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+
+    def test_non_synthetic_doosan_internal_tcp_wrench_metadata_is_accepted(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_doosan_wrench"
+            processed_episode = root / "processed" / "episode_doosan_wrench"
+            make_synthetic_raw_real_episode(
+                raw_episode,
+                frame_count=4,
+                include_optional_streams=True,
+                camera_layout="thesis",
+            )
+            _mark_non_synthetic(raw_episode, convention="rotation_vector_degrees")
+            _mark_gripper_state_real(raw_episode)
+
+            validation = validate_raw_real_episode(raw_episode)
+            self.assertTrue(validation.ok, validation.errors)
+            convert_raw_real_to_processed(raw_episode, processed_episode)
+            metadata = _read_json(processed_episode / "metadata_processed.json")
+            self.assertEqual(metadata["wrench_source"], ["tcp_wrench"])
+            self.assertEqual(metadata["wrench_source_metadata"]["tcp_wrench"]["source_type"], "doosan_internal")
+
+    def test_non_synthetic_doosan_internal_tcp_wrench_missing_metadata_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_bad_wrench"
+            make_synthetic_raw_real_episode(
+                raw_episode,
+                frame_count=4,
+                include_optional_streams=True,
+                camera_layout="thesis",
+            )
+            _mark_non_synthetic(raw_episode, convention="rotation_vector_degrees")
+            _mark_gripper_state_real(raw_episode)
+
+            streams_path = raw_episode / "streams" / "index.json"
+            streams_index = _read_json(streams_path)
+            del streams_index["streams"]["robot_state_rt"]["wrench_sources"]["tcp_wrench"]["order"]
+            _write_json(streams_path, streams_index)
+
+            validation = validate_raw_real_episode(raw_episode)
+            self.assertFalse(validation.ok)
+            self.assertTrue(any("selected source tcp_wrench order" in error for error in validation.errors))
 
     def test_two_frame_synthetic_raw_real_episode_converts_with_one_action(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -844,6 +1002,7 @@ class RawRealToProcessedTests(unittest.TestCase):
             processed_episode = root / "processed" / "episode_000000"
             make_synthetic_raw_real_episode(raw_episode, frame_count=4, include_optional_streams=True)
             _mark_non_synthetic(raw_episode, convention="rotation_vector_degrees")
+            _mark_gripper_state_real(raw_episode)
             gripper_path = raw_episode / "streams" / "gripper_state.jsonl"
             gripper_records = _read_jsonl(gripper_path)
             for idx, record in enumerate(gripper_records):
@@ -871,6 +1030,7 @@ class RawRealToProcessedTests(unittest.TestCase):
             processed_episode = root / "processed" / "episode_000000"
             make_synthetic_raw_real_episode(raw_episode, frame_count=4, include_optional_streams=True)
             _mark_non_synthetic(raw_episode, convention="rotation_vector_degrees")
+            _mark_gripper_state_real(raw_episode)
 
             validation = validate_raw_real_episode(raw_episode)
             report = inspect_raw_real_episode(raw_episode)
@@ -888,6 +1048,7 @@ class RawRealToProcessedTests(unittest.TestCase):
             processed_episode = root / "processed" / "episode_000000"
             make_synthetic_raw_real_episode(raw_episode, frame_count=4, include_optional_streams=True)
             _mark_non_synthetic(raw_episode, convention="rotation_vector_degrees")
+            _mark_gripper_state_real(raw_episode)
 
             robot_path = raw_episode / "streams" / "robot_state_rt.jsonl"
             robot_records = _read_jsonl(robot_path)

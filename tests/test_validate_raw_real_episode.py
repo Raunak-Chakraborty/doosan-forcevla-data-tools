@@ -76,6 +76,7 @@ def _mark_non_synthetic(
     strict_lab_provenance: bool = True,
     source_stamp_unit: str | None = "seconds",
     include_wrench_metadata: bool = True,
+    mark_gripper_real: bool = True,
 ) -> None:
     metadata_path = episode / "metadata.json"
     metadata = _read_json(metadata_path)
@@ -151,7 +152,22 @@ def _mark_non_synthetic(
         robot_entry["wrench_sources"] = _valid_wrench_sources_metadata()
     else:
         robot_entry.pop("wrench_sources", None)
+    gripper_entry = streams_index["streams"].get("gripper_state")
+    if mark_gripper_real and isinstance(gripper_entry, dict):
+        gripper_entry["source_name"] = "/verified/gripper_state"
+        gripper_entry["source_type"] = "verified_lab_gripper"
+        gripper_entry.pop("placeholder", None)
+        gripper_entry.pop("synthetic_placeholder", None)
     _write_json(streams_index_path, streams_index)
+
+    gripper_path = episode / "streams" / "gripper_state.jsonl"
+    if mark_gripper_real and gripper_path.is_file():
+        gripper_records = _read_jsonl(gripper_path)
+        for record in gripper_records:
+            record["source_name"] = "/verified/gripper_state"
+            record["source_type"] = "verified_lab_gripper"
+            record.pop("placeholder", None)
+        _write_jsonl(gripper_path, gripper_records)
 
 
 

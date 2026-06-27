@@ -26,6 +26,15 @@ REQUIRED_STREAM_NAMES = [
     "robot_state_rt",
     "tf",
     "tf_static",
+]
+
+DEFAULT_CAMERA_STREAM_NAMES = [
+    "tcp_camera",
+    "external_camera_1",
+    "external_camera_2",
+]
+
+LEGACY_CAMERA_STREAM_NAMES = [
     "external_camera",
     "wrist_camera",
 ]
@@ -63,6 +72,9 @@ DEFAULT_STREAM_RELATIVE_PATHS = {
     "robot_state_rt": "streams/robot_state_rt.jsonl",
     "tf": "streams/tf.jsonl",
     "tf_static": "streams/tf_static.jsonl",
+    "tcp_camera": "streams/tcp_camera",
+    "external_camera_1": "streams/external_camera_1",
+    "external_camera_2": "streams/external_camera_2",
     "external_camera": "streams/external_camera",
     "wrist_camera": "streams/wrist_camera",
     "command_context": "streams/command_context.jsonl",
@@ -136,12 +148,36 @@ class RawRealEpisodePaths:
         return self.stream_path("gripper_state")
 
     @property
+    def tcp_camera(self) -> Path:
+        return self.stream_path("tcp_camera")
+
+    @property
+    def external_camera_1(self) -> Path:
+        return self.stream_path("external_camera_1")
+
+    @property
+    def external_camera_2(self) -> Path:
+        return self.stream_path("external_camera_2")
+
+    @property
     def external_camera(self) -> Path:
         return self.stream_path("external_camera")
 
     @property
     def wrist_camera(self) -> Path:
         return self.stream_path("wrist_camera")
+
+    @property
+    def tcp_camera_index(self) -> Path:
+        return self.tcp_camera / "index.jsonl"
+
+    @property
+    def external_camera_1_index(self) -> Path:
+        return self.external_camera_1 / "index.jsonl"
+
+    @property
+    def external_camera_2_index(self) -> Path:
+        return self.external_camera_2 / "index.jsonl"
 
     @property
     def external_camera_index(self) -> Path:

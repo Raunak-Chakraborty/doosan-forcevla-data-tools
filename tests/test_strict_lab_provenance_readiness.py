@@ -16,6 +16,16 @@ def _write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
+def _read_jsonl(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _write_jsonl(path: Path, records: list[dict]) -> None:
+    with path.open("w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+
+
 
 def _valid_wrench_sources_metadata() -> dict:
     return {
@@ -61,6 +71,10 @@ def _mark_non_synthetic_with_required_units(episode: Path) -> None:
         "tool_frame": "tool0",
         "force_torque_source": "robot_state_rt.external_tcp_force",
         "gripper_state_source": "/gripper_state",
+        "camera_topics": {
+            "external_camera": "/external_camera/color/image_raw",
+            "wrist_camera": "/wrist_camera/color/image_raw",
+        },
         "time_sync_verified": True,
     }
     _write_json(metadata_path, metadata)
@@ -94,8 +108,20 @@ def _mark_non_synthetic_with_required_units(episode: Path) -> None:
         if isinstance(entry, dict):
             entry["verified"] = True
             entry["source_name"] = source_names.get(stream_name, f"/verified/{stream_name}")
+            if stream_name == "gripper_state":
+                entry["source_type"] = "verified_lab_gripper"
+                entry.pop("placeholder", None)
 
     _write_json(index_path, index)
+
+    gripper_path = episode / "streams" / "gripper_state.jsonl"
+    if gripper_path.is_file():
+        gripper_records = _read_jsonl(gripper_path)
+        for record in gripper_records:
+            record["source_name"] = "/gripper_state"
+            record["source_type"] = "verified_lab_gripper"
+            record.pop("placeholder", None)
+        _write_jsonl(gripper_path, gripper_records)
 
 
 class StrictLabProvenanceReadinessTests(unittest.TestCase):

@@ -28,6 +28,9 @@ DEFAULT_FPS = 30.0
 DEFAULT_EPISODE_ID = "episode_raw_real_synthetic_000000"
 GENERATOR_VERSION = "synthetic_raw_real_generator_v0"
 JOINT_NAMES = ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
+LEGACY_CAMERA_LAYOUT = "legacy"
+THESIS_CAMERA_LAYOUT = "thesis"
+CAMERA_LAYOUTS = {LEGACY_CAMERA_LAYOUT, THESIS_CAMERA_LAYOUT}
 
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
@@ -123,6 +126,72 @@ def _stream_relative_path(stream_name: str) -> str:
     return DEFAULT_STREAM_RELATIVE_PATHS[stream_name]
 
 
+def _camera_specs(camera_layout: str) -> list[dict[str, Any]]:
+    if camera_layout == LEGACY_CAMERA_LAYOUT:
+        return [
+            {
+                "stream_name": "external_camera",
+                "source_name": "synthetic_external_camera",
+                "frame_id": "external_camera_frame",
+                "camera_role": "external",
+                "role": "external_camera",
+                "camera_id": "synthetic_external_camera",
+                "model_input_key": "external_rgb_path",
+                "used_for_model": True,
+                "stream_offset": 0,
+            },
+            {
+                "stream_name": "wrist_camera",
+                "source_name": "synthetic_wrist_camera",
+                "frame_id": "wrist_camera_frame",
+                "camera_role": "wrist",
+                "role": "tcp_camera",
+                "camera_id": "synthetic_wrist_camera",
+                "model_input_key": "tcp_rgb_path",
+                "used_for_model": True,
+                "stream_offset": 40,
+            },
+        ]
+    if camera_layout == THESIS_CAMERA_LAYOUT:
+        return [
+            {
+                "stream_name": "tcp_camera",
+                "source_name": "synthetic_tcp_camera",
+                "frame_id": "tcp_camera_frame",
+                "camera_role": "tcp_camera",
+                "role": "tcp_camera",
+                "camera_id": "synthetic_tcp_camera",
+                "model_input_key": "tcp_rgb_path",
+                "used_for_model": True,
+                "stream_offset": 40,
+            },
+            {
+                "stream_name": "external_camera_1",
+                "source_name": "synthetic_external_camera_1",
+                "frame_id": "external_camera_1_frame",
+                "camera_role": "external_camera",
+                "role": "external_camera",
+                "camera_id": "synthetic_external_camera_1",
+                "external_camera_id": "1",
+                "model_input_key": "external_rgb_path",
+                "used_for_model": True,
+                "stream_offset": 0,
+            },
+            {
+                "stream_name": "external_camera_2",
+                "source_name": "synthetic_external_camera_2",
+                "frame_id": "external_camera_2_frame",
+                "camera_role": "external_camera",
+                "role": "external_camera",
+                "camera_id": "synthetic_external_camera_2",
+                "external_camera_id": "2",
+                "used_for_model": False,
+                "stream_offset": 80,
+            },
+        ]
+    raise ValueError(f"camera_layout must be one of {sorted(CAMERA_LAYOUTS)!r}")
+
+
 def _stream_entry(
     stream_name: str,
     *,
@@ -171,16 +240,16 @@ def _metadata(episode_id: str, fps: float) -> dict[str, Any]:
     }
 
 
-def _calibration_refs() -> dict[str, Any]:
+def _calibration_refs(camera_layout: str) -> dict[str, Any]:
+    camera_intrinsics: dict[str, str] = {}
+    camera_extrinsics: dict[str, str] = {}
+    for spec in _camera_specs(camera_layout):
+        stream_name = spec["stream_name"]
+        camera_intrinsics[stream_name] = f"synthetic_{stream_name}_intrinsics_v0"
+        camera_extrinsics[stream_name] = f"synthetic_{stream_name}_extrinsics_v0"
     return {
-        "camera_intrinsics": {
-            "external_camera": "synthetic_external_intrinsics_v0",
-            "wrist_camera": "synthetic_wrist_intrinsics_v0",
-        },
-        "camera_extrinsics": {
-            "external_camera": "synthetic_base_to_external_camera_v0",
-            "wrist_camera": "synthetic_tcp_to_wrist_camera_v0",
-        },
+        "camera_intrinsics": camera_intrinsics,
+        "camera_extrinsics": camera_extrinsics,
         "tcp_tool_calibration": "synthetic_tcp_tool_v0",
         "force_torque_calibration": "synthetic_force_torque_v0",
         "notes": "Synthetic placeholders for offline raw-real schema tests only.",
@@ -215,21 +284,18 @@ def _joint_state_records(frame_count: int, fps: float) -> list[dict[str, Any]]:
     ]
 
 
-def _robot_state_records(frame_count: int, fps: float) -> list[dict[str, Any]]:
+def _robot_state_records(frame_count: int, fps: float, *, canonical_tcp_wrench: bool) -> list[dict[str, Any]]:
     velocity = _joint_velocity(frame_count, fps)
     records: list[dict[str, Any]] = []
     for index in range(frame_count):
         force_torque = _force_torque(index, frame_count)
-        records.append(
-            {
+        record = {
                 **_timestamp(index, fps),
                 "source_name": "synthetic_robot_state_rt",
                 "source_type": "synthetic/jsonl",
                 "actual_tcp_position": _tcp_position(index, frame_count),
                 "actual_joint_position": _joint_position(index, frame_count),
                 "actual_joint_velocity": list(velocity),
-                "external_tcp_force": list(force_torque),
-                "raw_force_torque": list(force_torque),
                 "robot_mode": "synthetic_auto",
                 "robot_state": "synthetic_running",
                 "control_mode": "synthetic_position",
@@ -244,7 +310,12 @@ def _robot_state_records(frame_count: int, fps: float) -> list[dict[str, Any]]:
                 "frame_id": "base",
                 "tcp_frame_id": "tcp_link",
             }
-        )
+        if canonical_tcp_wrench:
+            record["tcp_wrench"] = list(force_torque)
+        else:
+            record["external_tcp_force"] = list(force_torque)
+            record["raw_force_torque"] = list(force_torque)
+        records.append(record)
     return records
 
 
@@ -270,7 +341,21 @@ def _tf_records(frame_count: int, fps: float) -> list[dict[str, Any]]:
     return records
 
 
-def _tf_static_records() -> list[dict[str, Any]]:
+def _tf_static_records(camera_layout: str) -> list[dict[str, Any]]:
+    camera_transforms = []
+    for spec in _camera_specs(camera_layout):
+        parent_frame = "tcp_link" if spec["role"] == "tcp_camera" else "base"
+        translation = [0.02, 0.0, 0.04] if parent_frame == "tcp_link" else [0.6, -0.3, 0.8]
+        if spec.get("external_camera_id") == "2":
+            translation = [0.6, 0.3, 0.8]
+        camera_transforms.append(
+            {
+                "parent_frame": parent_frame,
+                "child_frame": spec["frame_id"],
+                "translation": translation,
+                "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            }
+        )
     return [
         {
             "record_index": 0,
@@ -279,20 +364,7 @@ def _tf_static_records() -> list[dict[str, Any]]:
             "monotonic_stamp": 10.0,
             "source_name": "synthetic_tf_static",
             "source_type": "synthetic/jsonl",
-            "transforms": [
-                {
-                    "parent_frame": "base",
-                    "child_frame": "external_camera_frame",
-                    "translation": [0.6, -0.3, 0.8],
-                    "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
-                },
-                {
-                    "parent_frame": "tcp_link",
-                    "child_frame": "wrist_camera_frame",
-                    "translation": [0.02, 0.0, 0.04],
-                    "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
-                },
-            ],
+            "transforms": camera_transforms,
         }
     ]
 
@@ -350,18 +422,55 @@ def _gripper_state_records(frame_count: int, fps: float) -> list[dict[str, Any]]
     return [
         {
             **_timestamp(index, fps),
-            "source_name": "synthetic_gripper_state",
-            "source_type": "synthetic/jsonl",
+            "source_name": "synthetic_constant_pending_gripper_integration",
+            "source_type": "synthetic_placeholder",
             "gripper_position": 0.0,
             "gripper_width_m": 0.04,
             "gripper_command": "hold",
+            "placeholder": True,
         }
         for index in range(frame_count)
     ]
 
 
-def _stream_index(frame_count: int, include_optional_streams: bool) -> dict[str, Any]:
+def _wrench_sources_metadata(canonical_tcp_wrench: bool) -> dict[str, Any]:
+    if canonical_tcp_wrench:
+        return {
+            "tcp_wrench": {
+                "source_name": "doosan_internal_tcp_ft",
+                "source_type": "doosan_internal",
+                "source_service_or_topic": "synthetic/read_data_rt.tcp_wrench",
+                "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+                "force_unit": "N",
+                "torque_unit": "Nm",
+                "frame": "tcp_frame",
+                "compensation": "doosan_internal",
+                "approved_for_model_state": True,
+            }
+        }
+    return {
+        "external_tcp_force": {
+            "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+            "force_unit": "N",
+            "torque_unit": "Nm",
+            "frame": "base",
+            "compensation": "estimated_external_tcp_force",
+            "approved_for_model_state": True,
+        },
+        "raw_force_torque": {
+            "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+            "force_unit": "N",
+            "torque_unit": "Nm",
+            "frame": "flange",
+            "compensation": "raw_flange_sensor",
+            "approved_for_model_state": False,
+        },
+    }
+
+
+def _stream_index(frame_count: int, include_optional_streams: bool, camera_layout: str) -> dict[str, Any]:
     streams: dict[str, dict[str, Any]] = {}
+    canonical_tcp_wrench = camera_layout == THESIS_CAMERA_LAYOUT
 
     if "joint_states" in REQUIRED_STREAM_NAMES:
         streams["joint_states"] = _stream_entry(
@@ -396,6 +505,7 @@ def _stream_index(frame_count: int, include_optional_streams: bool) -> dict[str,
                 },
                 "frame_id": "base",
                 "tcp_frame_id": "tcp_link",
+                "wrench_sources": _wrench_sources_metadata(canonical_tcp_wrench),
             },
         )
 
@@ -420,47 +530,37 @@ def _stream_index(frame_count: int, include_optional_streams: bool) -> dict[str,
             record_count=1,
             extra={
                 "frame_metadata": {
-                    "static_frames": ["external_camera_frame", "wrist_camera_frame"]
+                    "static_frames": [spec["frame_id"] for spec in _camera_specs(camera_layout)]
                 }
             },
         )
 
-    if "external_camera" in REQUIRED_STREAM_NAMES:
-        streams["external_camera"] = _stream_entry(
-            "external_camera",
+    for spec in _camera_specs(camera_layout):
+        extra = {
+            "type": "camera_rgb",
+            "stream_type": "camera_rgb",
+            "frame_id": spec["frame_id"],
+            "role": spec["role"],
+            "camera_role": spec["camera_role"],
+            "camera_id": spec["camera_id"],
+            "encoding": "rgb8",
+            "width": 2,
+            "height": 2,
+            "channels": 3,
+            "used_for_model": spec.get("used_for_model", False),
+        }
+        if spec.get("external_camera_id") is not None:
+            extra["external_camera_id"] = spec["external_camera_id"]
+        if spec.get("model_input_key") is not None:
+            extra["model_input_key"] = spec["model_input_key"]
+        streams[spec["stream_name"]] = _stream_entry(
+            spec["stream_name"],
             kind="camera_images",
             required=True,
-            source_name="synthetic_external_camera",
+            source_name=spec["source_name"],
             source_type="synthetic/image",
             record_count=frame_count,
-            extra={
-                "frame_id": "external_camera_frame",
-                "camera_role": "external",
-                "camera_id": "synthetic_external_camera",
-                "encoding": "rgb8",
-                "width": 2,
-                "height": 2,
-                "channels": 3,
-            },
-        )
-
-    if "wrist_camera" in REQUIRED_STREAM_NAMES:
-        streams["wrist_camera"] = _stream_entry(
-            "wrist_camera",
-            kind="camera_images",
-            required=True,
-            source_name="synthetic_wrist_camera",
-            source_type="synthetic/image",
-            record_count=frame_count,
-            extra={
-                "frame_id": "wrist_camera_frame",
-                "camera_role": "wrist",
-                "camera_id": "synthetic_wrist_camera",
-                "encoding": "rgb8",
-                "width": 2,
-                "height": 2,
-                "channels": 3,
-            },
+            extra=extra,
         )
 
     if include_optional_streams:
@@ -480,18 +580,36 @@ def _stream_index(frame_count: int, include_optional_streams: bool) -> dict[str,
                 kind="jsonl",
                 required=False,
                 source_name="synthetic_gripper_state",
-                source_type="synthetic/jsonl",
+                source_type="synthetic_placeholder",
                 record_count=frame_count,
-                extra={"units": {"gripper_width_m": "m"}},
+                extra={
+                    "units": {"gripper_width_m": "m"},
+                    "source_name": "synthetic_constant_pending_gripper_integration",
+                    "placeholder": True,
+                },
             )
 
-    return {"schema_version": RAW_REAL_SCHEMA_VERSION, "synthetic": True, "streams": streams}
+    return {
+        "schema_version": RAW_REAL_SCHEMA_VERSION,
+        "synthetic": True,
+        "camera_layout": camera_layout,
+        "model_camera_mapping": {
+            "external_rgb_path": next(
+                spec["stream_name"] for spec in _camera_specs(camera_layout) if spec.get("model_input_key") == "external_rgb_path"
+            ),
+            "tcp_rgb_path": next(
+                spec["stream_name"] for spec in _camera_specs(camera_layout) if spec.get("model_input_key") == "tcp_rgb_path"
+            ),
+        },
+        "streams": streams,
+    }
 
 
 def _recorder_report(
     frame_count: int,
     fps: float,
     include_optional_streams: bool,
+    camera_layout: str,
     stream_record_counts: dict[str, int],
 ) -> dict[str, Any]:
     return {
@@ -501,6 +619,7 @@ def _recorder_report(
         "frame_count": frame_count,
         "fps": fps,
         "include_optional_streams": include_optional_streams,
+        "camera_layout": camera_layout,
         "stream_record_counts": stream_record_counts,
         "warnings": [],
         "notes": [
@@ -518,6 +637,7 @@ def make_synthetic_raw_real_episode(
     frame_count: int = DEFAULT_FRAME_COUNT,
     fps: float = DEFAULT_FPS,
     include_optional_streams: bool = False,
+    camera_layout: str = LEGACY_CAMERA_LAYOUT,
     overwrite: bool = False,
 ) -> Path:
     """Create a deterministic synthetic ``raw_real_v0`` episode directory."""
@@ -526,50 +646,44 @@ def make_synthetic_raw_real_episode(
         raise ValueError("frame_count must be greater than 1")
     if fps <= 0:
         raise ValueError("fps must be positive")
+    if camera_layout not in CAMERA_LAYOUTS:
+        raise ValueError(f"camera_layout must be one of {sorted(CAMERA_LAYOUTS)!r}")
 
     episode_dir = _prepare_output(output, overwrite=overwrite)
     paths = RawRealEpisodePaths(episode_dir)
+    canonical_tcp_wrench = camera_layout == THESIS_CAMERA_LAYOUT
 
     _write_json(paths.metadata, _metadata(episode_id, float(fps)))
-    _write_json(paths.calibration_refs, _calibration_refs())
+    _write_json(paths.calibration_refs, _calibration_refs(camera_layout))
     _write_jsonl(paths.events, _events(frame_count, float(fps)))
 
     _write_jsonl(paths.joint_states, _joint_state_records(frame_count, float(fps)))
-    _write_jsonl(paths.robot_state_rt, _robot_state_records(frame_count, float(fps)))
+    _write_jsonl(paths.robot_state_rt, _robot_state_records(frame_count, float(fps), canonical_tcp_wrench=canonical_tcp_wrench))
     _write_jsonl(paths.tf, _tf_records(frame_count, float(fps)))
-    _write_jsonl(paths.tf_static, _tf_static_records())
+    _write_jsonl(paths.tf_static, _tf_static_records(camera_layout))
 
-    external_camera_records = _camera_records(
-        episode_dir,
-        "external_camera",
-        "synthetic_external_camera",
-        "external_camera_frame",
-        "external",
-        frame_count,
-        float(fps),
-        stream_offset=0,
-    )
-    wrist_camera_records = _camera_records(
-        episode_dir,
-        "wrist_camera",
-        "synthetic_wrist_camera",
-        "wrist_camera_frame",
-        "wrist",
-        frame_count,
-        float(fps),
-        stream_offset=40,
-    )
-    _write_jsonl(paths.external_camera_index, external_camera_records)
-    _write_jsonl(paths.wrist_camera_index, wrist_camera_records)
+    camera_record_counts: dict[str, int] = {}
+    for spec in _camera_specs(camera_layout):
+        camera_records = _camera_records(
+            episode_dir,
+            spec["stream_name"],
+            spec["source_name"],
+            spec["frame_id"],
+            spec["camera_role"],
+            frame_count,
+            float(fps),
+            stream_offset=int(spec["stream_offset"]),
+        )
+        _write_jsonl(episode_dir / DEFAULT_STREAM_RELATIVE_PATHS[spec["stream_name"]] / "index.jsonl", camera_records)
+        camera_record_counts[spec["stream_name"]] = frame_count
 
     stream_record_counts = {
         "joint_states": frame_count,
         "robot_state_rt": frame_count,
         "tf": frame_count,
         "tf_static": 1,
-        "external_camera": frame_count,
-        "wrist_camera": frame_count,
     }
+    stream_record_counts.update(camera_record_counts)
 
     if include_optional_streams:
         _write_jsonl(paths.command_context, _command_context_records(frame_count, float(fps)))
@@ -577,10 +691,10 @@ def make_synthetic_raw_real_episode(
         stream_record_counts["command_context"] = frame_count
         stream_record_counts["gripper_state"] = frame_count
 
-    _write_json(paths.streams_index, _stream_index(frame_count, include_optional_streams))
+    _write_json(paths.streams_index, _stream_index(frame_count, include_optional_streams, camera_layout))
     _write_json(
         paths.recorder_report,
-        _recorder_report(frame_count, float(fps), include_optional_streams, stream_record_counts),
+        _recorder_report(frame_count, float(fps), include_optional_streams, camera_layout, stream_record_counts),
     )
 
     return episode_dir
@@ -602,6 +716,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--frames", type=int, default=DEFAULT_FRAME_COUNT)
     parser.add_argument("--fps", type=float, default=DEFAULT_FPS)
     parser.add_argument("--include-optional-streams", action="store_true")
+    parser.add_argument("--camera-layout", choices=sorted(CAMERA_LAYOUTS), default=LEGACY_CAMERA_LAYOUT)
     parser.add_argument("--overwrite", action="store_true", help="Replace an existing output directory")
     args = parser.parse_args(argv)
 
@@ -613,6 +728,7 @@ def main(argv: list[str] | None = None) -> int:
             frame_count=args.frames,
             fps=args.fps,
             include_optional_streams=args.include_optional_streams,
+            camera_layout=args.camera_layout,
             overwrite=args.overwrite,
         )
     except (OSError, ValueError) as exc:

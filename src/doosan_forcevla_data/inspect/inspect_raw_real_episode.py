@@ -21,14 +21,16 @@ from doosan_forcevla_data.schema.raw_real_schema import (
 from doosan_forcevla_data.validate.validate_raw_real_episode import (
     ROTATION_VECTOR_DEGREES,
     ROTATION_VECTOR_RADIANS,
+    camera_stream_names,
     is_explicit_synthetic_episode,
+    is_camera_stream_entry,
     raw_real_conversion_readiness_errors,
+    select_model_camera_streams,
     tcp_orientation_convention_readiness_error,
     validate_raw_real_episode,
 )
 
 
-CAMERA_STREAM_NAMES = {"external_camera", "wrist_camera"}
 JSONL_STREAM_NAMES = {
     "joint_states",
     "robot_state_rt",
@@ -37,7 +39,8 @@ JSONL_STREAM_NAMES = {
     "command_context",
     "gripper_state",
 }
-CONVERTER_REQUIRED_STREAMS = ["joint_states", "external_camera", "wrist_camera"]
+CONVERTER_REQUIRED_STREAMS = ["joint_states"]
+WRENCH_SOURCE_FIELDS = ["tcp_wrench", "measured_tcp_wrench", "external_tcp_force", "raw_force_torque"]
 
 
 def _is_finite_number(value: Any) -> bool:
@@ -180,7 +183,7 @@ def _stream_records_path(root: Path, stream_name: str, entry: dict[str, Any] | N
     path, path_error = _safe_relative_path(root, effective_entry.get("path"))
     if path is None:
         return None, [f"streams/index.json: stream {stream_name} {path_error}"]
-    if stream_name in CAMERA_STREAM_NAMES:
+    if is_camera_stream_entry(stream_name, effective_entry):
         return path / "index.jsonl", []
     return path, []
 
@@ -219,7 +222,7 @@ def _summarize_stream(
         summary["read_errors"] = list(errors)
         return summary, records, errors
 
-    if stream_name in CAMERA_STREAM_NAMES:
+    if is_camera_stream_entry(stream_name, entry):
         stream_dir = records_path.parent
         summary["path"] = str(stream_dir)
         summary["index_path"] = str(records_path)
@@ -284,21 +287,22 @@ def _optional_streams_summary(streams: dict[str, Any]) -> dict[str, dict[str, An
     }
 
 
-def _timeline_summary(records_by_stream: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+def _timeline_summary(records_by_stream: dict[str, list[dict[str, Any]]], camera_streams: list[str]) -> dict[str, Any]:
     robot_records = records_by_stream.get("robot_state_rt", [])
     robot_indexes = sorted(set(_record_indexes(robot_records)))
     primary_set = set(robot_indexes)
     missing_by_stream: dict[str, list[int]] = {}
     extra_by_stream: dict[str, list[int]] = {}
 
-    for stream_name in CONVERTER_REQUIRED_STREAMS:
+    required_streams = CONVERTER_REQUIRED_STREAMS + camera_streams
+    for stream_name in required_streams:
         indexes = set(_record_indexes(records_by_stream.get(stream_name, [])))
         missing_by_stream[stream_name] = sorted(primary_set - indexes)
         extra_by_stream[stream_name] = sorted(indexes - primary_set)
 
     required_aligned = bool(primary_set) and all(
         not missing_by_stream[stream_name] and not extra_by_stream[stream_name]
-        for stream_name in CONVERTER_REQUIRED_STREAMS
+        for stream_name in required_streams
     )
     return {
         "primary_stream": "robot_state_rt",
@@ -336,6 +340,7 @@ def _offset_summary(
 def _timestamp_summary(
     metadata: dict[str, Any] | None,
     records_by_stream: dict[str, list[dict[str, Any]]],
+    camera_streams: list[str],
 ) -> dict[str, Any]:
     fps_value = metadata.get("fps") if isinstance(metadata, dict) else None
     fps = float(fps_value) if _is_finite_number(fps_value) and float(fps_value) > 0.0 else None
@@ -351,14 +356,18 @@ def _timestamp_summary(
         "robot_state_rt_dt_max": max(dts) if dts else None,
         "robot_state_rt_dt_mean": _mean(dts),
         "camera_source_stamp_offset_summary": {
-            name: _offset_summary(robot_records, records_by_stream.get(name, [])) for name in sorted(CAMERA_STREAM_NAMES)
+            name: _offset_summary(robot_records, records_by_stream.get(name, [])) for name in camera_streams
         },
     }
 
 
-def _camera_summary(root: Path, records_by_stream: dict[str, list[dict[str, Any]]]) -> dict[str, dict[str, Any]]:
+def _camera_summary(
+    root: Path,
+    records_by_stream: dict[str, list[dict[str, Any]]],
+    camera_streams: list[str],
+) -> dict[str, dict[str, Any]]:
     summary: dict[str, dict[str, Any]] = {}
-    for stream_name in sorted(CAMERA_STREAM_NAMES):
+    for stream_name in camera_streams:
         records = records_by_stream.get(stream_name, [])
         image_paths = [record.get("image_path") for record in records if isinstance(record.get("image_path"), str)]
         duplicates = len(image_paths) - len(set(image_paths))
@@ -484,21 +493,15 @@ def _joint_summary(stream_entry: dict[str, Any] | None, records: list[dict[str, 
 
 
 def _wrench_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
-    external_count = sum(1 for record in records if _finite_vector(record.get("external_tcp_force"), 6))
-    raw_count = sum(1 for record in records if _finite_vector(record.get("raw_force_torque"), 6))
-    valid_count = sum(
-        1
-        for record in records
-        if _finite_vector(record.get("external_tcp_force"), 6) or _finite_vector(record.get("raw_force_torque"), 6)
-    )
+    counts = {source: sum(1 for record in records if _finite_vector(record.get(source), 6)) for source in WRENCH_SOURCE_FIELDS}
+    valid_count = sum(1 for record in records if any(_finite_vector(record.get(source), 6) for source in WRENCH_SOURCE_FIELDS))
     preferred_source = "none"
-    if external_count:
-        preferred_source = "external_tcp_force"
-    elif raw_count:
-        preferred_source = "raw_force_torque"
+    for source in WRENCH_SOURCE_FIELDS:
+        if counts[source]:
+            preferred_source = source
+            break
     return {
-        "external_tcp_force_records": external_count,
-        "raw_force_torque_records": raw_count,
+        **{f"{source}_records": count for source, count in counts.items()},
         "valid_wrench_records": valid_count,
         "preferred_source": preferred_source,
     }
@@ -517,6 +520,11 @@ def _gripper_summary(stream_summary: dict[str, Any], records: list[dict[str, Any
         "record_count": len(records),
         "usable_records": max(position_count, width_count),
         "field_used": field_used,
+        "placeholder_source_detected": any(
+            isinstance(record.get("source_name"), str)
+            and ("synthetic" in record["source_name"].lower() or "pipeline_smoke" in record["source_name"].lower())
+            for record in records
+        ),
     }
 
 
@@ -670,6 +678,7 @@ def inspect_raw_real_episode(
         for stream_name in sorted(streams):
             if stream_name not in stream_names:
                 stream_names.append(stream_name)
+    declared_camera_streams = camera_stream_names(streams)
 
     streams_summary: dict[str, dict[str, Any]] = {}
     records_by_stream: dict[str, list[dict[str, Any]]] = {}
@@ -682,9 +691,9 @@ def inspect_raw_real_episode(
 
     required_streams = _required_streams_summary(streams_summary)
     optional_streams = _optional_streams_summary(streams_summary)
-    timeline = _timeline_summary(records_by_stream)
-    timestamps = _timestamp_summary(metadata, records_by_stream)
-    camera_summary = _camera_summary(root, records_by_stream)
+    timeline = _timeline_summary(records_by_stream, declared_camera_streams)
+    timestamps = _timestamp_summary(metadata, records_by_stream, declared_camera_streams)
+    camera_summary = _camera_summary(root, records_by_stream, declared_camera_streams)
     robot_state_summary = _robot_state_summary(
         metadata,
         recorder_report,
@@ -710,6 +719,9 @@ def inspect_raw_real_episode(
         root_dir=root,
         calibration_refs=calibration_refs,
     )
+    selected_camera_streams, camera_mapping_errors, camera_selection_sources = select_model_camera_streams(
+        metadata, streams_index, streams
+    )
 
     conversion_blockers = _conversion_blockers(
         validation.ok,
@@ -722,6 +734,11 @@ def inspect_raw_real_episode(
         conversion_readiness_errors,
     )
     ready_for_conversion = validation.ok and not conversion_blockers
+    explicit_synthetic = is_explicit_synthetic_episode(metadata, recorder_report, streams_index)
+    schema_valid = validation.ok
+    conversion_ready = ready_for_conversion
+    training_ready = conversion_ready and not explicit_synthetic
+    real_hardware_verified = training_ready
     inspection_errors = (
         metadata_errors
         + calibration_errors
@@ -762,6 +779,10 @@ def inspect_raw_real_episode(
         "success": metadata.get("success") if isinstance(metadata, dict) else None,
         "failure_reason": metadata.get("failure_reason") if isinstance(metadata, dict) else None,
         "fps": metadata.get("fps") if isinstance(metadata, dict) else None,
+        "schema_valid": schema_valid,
+        "conversion_ready": conversion_ready,
+        "training_ready": training_ready,
+        "real_hardware_verified": real_hardware_verified,
         "ready_for_conversion": ready_for_conversion,
         "require_convertible": require_convertible,
         "validation": _validation_dict(validation),
@@ -770,6 +791,9 @@ def inspect_raw_real_episode(
         "optional_streams": optional_streams,
         "timeline": timeline,
         "timestamps": timestamps,
+        "selected_camera_streams": selected_camera_streams,
+        "camera_selection_sources": camera_selection_sources,
+        "camera_mapping_errors": camera_mapping_errors,
         "camera_summary": camera_summary,
         "robot_state_summary": robot_state_summary,
         "joint_summary": joint_summary,
@@ -808,6 +832,10 @@ def print_inspection_summary(report: dict[str, Any]) -> None:
     print(f"episode_dir: {report['episode_dir']}")
     print(f"status: {report['status']}")
     print(f"validation_ok: {_status(report['validation']['ok'])}")
+    print(f"schema_valid: {_status(report['schema_valid'])}")
+    print(f"conversion_ready: {_status(report['conversion_ready'])}")
+    print(f"training_ready: {_status(report['training_ready'])}")
+    print(f"real_hardware_verified: {_status(report['real_hardware_verified'])}")
     print(f"ready_for_conversion: {_status(report['ready_for_conversion'])}")
     print(f"schema_version: {report['schema_version']}")
     print(f"episode_id: {report['episode_id']}")
@@ -820,7 +848,11 @@ def print_inspection_summary(report: dict[str, Any]) -> None:
     print(f"expected_dt: {_format_number(timestamps['expected_dt'])}")
 
     print("Streams")
-    for stream_name in REQUIRED_STREAM_NAMES + OPTIONAL_STREAM_NAMES:
+    stream_names = list(REQUIRED_STREAM_NAMES) + list(OPTIONAL_STREAM_NAMES)
+    for stream_name in report["streams"]:
+        if stream_name not in stream_names:
+            stream_names.append(stream_name)
+    for stream_name in stream_names:
         stream = report["streams"].get(stream_name, {})
         print(
             f"{stream_name}: present={_status(bool(stream.get('present')))} "

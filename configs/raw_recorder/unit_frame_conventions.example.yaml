@@ -49,16 +49,19 @@ frames:
   tool_frame:
     name: unknown
     verified: false
-  external_camera_frame:
+  tcp_camera_frame:
     name: unknown
     verified: false
-  wrist_camera_frame:
+  external_camera_1_frame:
+    name: unknown
+    verified: false
+  external_camera_2_frame:
     name: unknown
     verified: false
   force_torque_frame:
-    name: unknown
+    name: tcp_frame
     verified: false
-    notes: Force-torque frame and sign convention are unknown.
+    notes: Preferred wrench is Doosan internal tcp_wrench [Fx, Fy, Fz, Tx, Ty, Tz] in N/Nm; frame, compensation, and sign convention must be verified.
 
 conversion_policy:
   compute_action_from: measured_consecutive_tcp_pose
@@ -74,3 +77,4 @@ conversion_policy:
   normalize_tcp_translation_to_meters: true
   normalize_joint_positions_to_radians: true
   verify_quaternion_conversion_before_training: true
+  tcp_orientation_policy: raw Doosan Euler ZYZ may be preserved separately, but model/converter orientation must be normalized to rotation_vector_degrees or rotation_vector_radians; do not guess three-number orientation conventions.

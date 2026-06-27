@@ -22,9 +22,13 @@ from doosan_forcevla_data.schema.processed_schema import (
 )
 from doosan_forcevla_data.validate.validate_processed_episode import validate_processed_episode
 from doosan_forcevla_data.validate.validate_raw_real_episode import (
+    MODEL_EXTERNAL_IMAGE_KEY,
+    MODEL_TCP_IMAGE_KEY,
+    camera_stream_names,
     tcp_orientation_convention_readiness_error,
     is_explicit_synthetic_episode,
     raw_real_conversion_readiness_errors,
+    select_model_camera_streams,
     selected_wrench_metadata_for_model_state,
     validate_raw_real_episode,
 )
@@ -34,6 +38,7 @@ DATASET_NAME = "doosan_peg_in_hole_v0"
 CONVERTER_VERSION = "raw_real_to_processed_v0"
 ROTATION_VECTOR_DEGREES = "rotation_vector_degrees"
 ROTATION_VECTOR_RADIANS = "rotation_vector_radians"
+WRENCH_SOURCE_FIELDS = ["tcp_wrench", "measured_tcp_wrench", "external_tcp_force", "raw_force_torque"]
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
@@ -340,14 +345,13 @@ def _select_joint_vectors(
 
 
 def _select_wrench(robot_record: dict[str, Any], frame_index: int) -> tuple[list[float], str]:
-    external_tcp_force = _maybe_finite_vector(robot_record.get("external_tcp_force"), 6)
-    if external_tcp_force is not None:
-        return external_tcp_force, "external_tcp_force"
-    raw_force_torque = _maybe_finite_vector(robot_record.get("raw_force_torque"), 6)
-    if raw_force_torque is not None:
-        return raw_force_torque, "raw_force_torque"
+    for source in WRENCH_SOURCE_FIELDS:
+        wrench = _maybe_finite_vector(robot_record.get(source), 6)
+        if wrench is not None:
+            return wrench, source
     raise ValueError(
-        f"robot_state_rt record {frame_index}: external_tcp_force or raw_force_torque must contain 6 finite values"
+        f"robot_state_rt record {frame_index}: tcp_wrench, measured_tcp_wrench, external_tcp_force, "
+        "or raw_force_torque must contain 6 finite values"
     )
 
 
@@ -424,6 +428,53 @@ def _frame_image_path(
     target_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(raw_image, target_path)
     return target_relative.as_posix()
+
+
+def _camera_stream_metadata(streams: dict[str, Any], stream_names: list[str]) -> dict[str, dict[str, Any]]:
+    metadata: dict[str, dict[str, Any]] = {}
+    for stream_name in stream_names:
+        entry = streams.get(stream_name)
+        if not isinstance(entry, dict):
+            continue
+        metadata[stream_name] = {
+            key: entry[key]
+            for key in [
+                "path",
+                "type",
+                "stream_type",
+                "kind",
+                "role",
+                "camera_role",
+                "camera_id",
+                "external_camera_id",
+                "source_name",
+                "source_type",
+                "model_input_key",
+                "used_for_model",
+                "record_count",
+                "verified",
+            ]
+            if key in entry
+        }
+    return metadata
+
+
+def _processed_camera_mapping(
+    selected_camera_streams: dict[str, str],
+    selection_sources: dict[str, str],
+) -> dict[str, dict[str, str]]:
+    return {
+        "external_rgb_path": {
+            "raw_stream": selected_camera_streams[MODEL_EXTERNAL_IMAGE_KEY],
+            "model_input": "observation.image",
+            "selection_source": selection_sources.get(MODEL_EXTERNAL_IMAGE_KEY, "unknown"),
+        },
+        "tcp_rgb_path": {
+            "raw_stream": selected_camera_streams[MODEL_TCP_IMAGE_KEY],
+            "model_input": "observation.wrist_image",
+            "selection_source": selection_sources.get(MODEL_TCP_IMAGE_KEY, "unknown"),
+        },
+    }
 
 
 def _contains_path(parent: Path, child: Path) -> bool:
@@ -527,18 +578,32 @@ def convert_raw_real_to_processed(
     if not robot_records:
         raise ValueError("robot_state_rt stream must contain at least one record")
     joint_records = _read_jsonl_objects(_stream_path(raw_root, streams, "joint_states"))
-    external_camera_records = _load_camera_index(raw_root, streams, "external_camera")
-    wrist_camera_records = _load_camera_index(raw_root, streams, "wrist_camera")
+    selected_camera_streams, camera_mapping_errors, camera_selection_sources = select_model_camera_streams(
+        metadata, streams_index, streams
+    )
+    if camera_mapping_errors:
+        raise ValueError("raw-real camera mapping is not ready for conversion:\n" + "\n".join(camera_mapping_errors))
+    external_camera_stream = selected_camera_streams[MODEL_EXTERNAL_IMAGE_KEY]
+    tcp_camera_stream = selected_camera_streams[MODEL_TCP_IMAGE_KEY]
+    declared_camera_streams = camera_stream_names(streams)
+    camera_records_by_stream = {
+        stream_name: _load_camera_index(raw_root, streams, stream_name)
+        for stream_name in declared_camera_streams
+    }
 
     robot_by_index = _records_by_index(robot_records, "robot_state_rt")
     joint_by_index = _records_by_index(joint_records, "joint_states")
-    external_camera_by_index = _records_by_index(external_camera_records, "external_camera")
-    wrist_camera_by_index = _records_by_index(wrist_camera_records, "wrist_camera")
+    camera_by_index = {
+        stream_name: _records_by_index(records, stream_name)
+        for stream_name, records in camera_records_by_stream.items()
+    }
+    external_camera_by_index = camera_by_index[external_camera_stream]
+    tcp_camera_by_index = camera_by_index[tcp_camera_stream]
     primary_indexes = set(robot_by_index)
 
     _require_aligned_indexes(primary_indexes, joint_by_index, "joint_states")
-    _require_aligned_indexes(primary_indexes, external_camera_by_index, "external_camera")
-    _require_aligned_indexes(primary_indexes, wrist_camera_by_index, "wrist_camera")
+    for stream_name, records_by_index in camera_by_index.items():
+        _require_aligned_indexes(primary_indexes, records_by_index, stream_name)
 
     gripper_by_index: dict[int, dict[str, Any]] = {}
     gripper_records: list[dict[str, Any]] = []
@@ -560,9 +625,8 @@ def convert_raw_real_to_processed(
     records_by_stream: dict[str, list[dict[str, Any]]] = {
         "joint_states": joint_records,
         "robot_state_rt": robot_records,
-        "external_camera": external_camera_records,
-        "wrist_camera": wrist_camera_records,
     }
+    records_by_stream.update(camera_records_by_stream)
     if gripper_records:
         records_by_stream["gripper_state"] = gripper_records
     calibration_refs = _read_json_object(raw_root / "calibration_refs.json")
@@ -629,15 +693,15 @@ def convert_raw_real_to_processed(
                     raw_root=raw_root,
                     output_root=output_root,
                     camera_record=external_camera_by_index[record_index],
-                    stream_name="external_camera",
+                    stream_name=external_camera_stream,
                     frame_index=frame_index,
                     copy_images=copy_images,
                 ),
                 "tcp_rgb_path": _frame_image_path(
                     raw_root=raw_root,
                     output_root=output_root,
-                    camera_record=wrist_camera_by_index[record_index],
-                    stream_name="wrist_camera",
+                    camera_record=tcp_camera_by_index[record_index],
+                    stream_name=tcp_camera_stream,
                     frame_index=frame_index,
                     copy_images=copy_images,
                 ),
@@ -689,14 +753,16 @@ def convert_raw_real_to_processed(
         "selected_streams": {
             "primary_timeline": "robot_state_rt",
             "joint_states": "record_index aligned fallback only when robot_state_rt joint vectors are unavailable",
-            "external_rgb_path": "external_camera.image_path",
-            "tcp_rgb_path": "wrist_camera.image_path",
+            "external_rgb_path": f"{external_camera_stream}.image_path",
+            "tcp_rgb_path": f"{tcp_camera_stream}.image_path",
             "gripper_state": (
                 "record_index aligned measured gripper_state stream"
                 if gripper_by_index
                 else "synthetic-only fallback; gripper_pos=0.0"
             ),
         },
+        "camera_mapping": _processed_camera_mapping(selected_camera_streams, camera_selection_sources),
+        "raw_camera_streams": _camera_stream_metadata(streams, declared_camera_streams),
         "unit_conversions": {
             "tcp_position": "raw units to meters",
             "tcp_orientation": "rotation vector units to radians",

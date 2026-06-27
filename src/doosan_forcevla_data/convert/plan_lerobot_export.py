@@ -127,9 +127,20 @@ def build_lerobot_export_plan(processed_episode_dir: str | Path, profile: str) -
         "observation_state_dim": observation_state_dim,
         "action_dim": ACTION_DIM,
         "image_streams": {
-            "observation.image": {"source_key": "external_rgb_path"},
-            "observation.wrist_image": {"source_key": "tcp_rgb_path"},
+            "observation.image": {
+                "source_key": "external_rgb_path",
+                "raw_camera_stream": metadata.get("camera_mapping", {})
+                .get("external_rgb_path", {})
+                .get("raw_stream"),
+            },
+            "observation.wrist_image": {
+                "source_key": "tcp_rgb_path",
+                "raw_camera_stream": metadata.get("camera_mapping", {})
+                .get("tcp_rgb_path", {})
+                .get("raw_stream"),
+            },
         },
+        "raw_camera_streams": metadata.get("raw_camera_streams", {}),
         "image_availability": {
             "observation.image": {"existing_count": image_count},
             "observation.wrist_image": {"existing_count": wrist_image_count},

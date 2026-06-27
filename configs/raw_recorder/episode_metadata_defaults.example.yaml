@@ -37,12 +37,17 @@ source_workspace:
 
 live_graph_verification:
   exact_doosan_namespace: unknown
+  camera_topics:
+    tcp_camera: unknown
+    external_camera_1: unknown
+    external_camera_2: unknown
+  # Legacy aliases accepted by the data tools for old fixtures only.
   external_camera_topic: unknown
   wrist_camera_topic: unknown
   read_data_rt_service: unknown
   tcp_frame: unknown
   flange_frame: unknown
   tool_frame: unknown
-  force_torque_source: unknown
+  force_torque_source: robot_state_rt.tcp_wrench
   gripper_state_source: unknown
   time_sync_verified: false

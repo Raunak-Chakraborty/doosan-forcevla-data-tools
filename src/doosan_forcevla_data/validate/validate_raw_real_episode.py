@@ -56,8 +56,15 @@ KNOWN_CAMERA_STREAM_NAMES = {
 }
 CAMERA_STREAM_KIND_VALUES = {"camera_rgb", "camera_images", "rgb_camera", "camera"}
 MODEL_EXTERNAL_IMAGE_KEY = "external_rgb_path"
+MODEL_EXTERNAL_CAMERA_2_IMAGE_KEY = "external_camera_2_rgb_path"
 MODEL_TCP_IMAGE_KEY = "tcp_rgb_path"
 MODEL_CAMERA_OUTPUT_KEYS = [MODEL_EXTERNAL_IMAGE_KEY, MODEL_TCP_IMAGE_KEY]
+PROCESSED_CAMERA_OUTPUT_KEYS = [
+    MODEL_EXTERNAL_IMAGE_KEY,
+    MODEL_EXTERNAL_CAMERA_2_IMAGE_KEY,
+    MODEL_TCP_IMAGE_KEY,
+]
+DEFAULT_THREE_CAMERA_STREAM_NAMES = ["external_camera_1", "external_camera_2", "tcp_camera"]
 MODEL_CAMERA_MAPPING_KEYS = [
     "model_camera_mapping",
     "model_input_cameras",
@@ -72,6 +79,15 @@ EXTERNAL_CAMERA_MAPPING_KEYS = {
     "external_camera_1",
     "external",
     "model_external_camera",
+}
+EXTERNAL_CAMERA_2_MAPPING_KEYS = {
+    "external_camera_2_rgb_path",
+    "external_camera_2",
+    "observation.images.right",
+    "observation_image_right",
+    "right_image",
+    "right_camera",
+    "model_right_camera",
 }
 TCP_CAMERA_MAPPING_KEYS = {
     "tcp_rgb_path",
@@ -260,6 +276,8 @@ def _camera_target_from_mapping_key(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
     normalized = _normalized_label(value)
+    if normalized in {_normalized_label(key) for key in EXTERNAL_CAMERA_2_MAPPING_KEYS}:
+        return MODEL_EXTERNAL_CAMERA_2_IMAGE_KEY
     if normalized in {_normalized_label(key) for key in EXTERNAL_CAMERA_MAPPING_KEYS}:
         return MODEL_EXTERNAL_IMAGE_KEY
     if normalized in {_normalized_label(key) for key in TCP_CAMERA_MAPPING_KEYS}:
@@ -281,12 +299,17 @@ def _camera_target_from_role(value: Any) -> str | None:
 def _camera_target_from_stream_name(stream_name: str) -> str | None:
     if stream_name in {"tcp_camera", "wrist_camera"}:
         return MODEL_TCP_IMAGE_KEY
+    if stream_name == "external_camera_2":
+        return MODEL_EXTERNAL_CAMERA_2_IMAGE_KEY
     if stream_name == "external_camera" or stream_name.startswith("external_camera_"):
         return MODEL_EXTERNAL_IMAGE_KEY
     return None
 
 
 def _camera_target_for_inference(stream_name: str, entry: dict[str, Any]) -> str | None:
+    stream_name_target = _camera_target_from_stream_name(stream_name)
+    if stream_name_target == MODEL_EXTERNAL_CAMERA_2_IMAGE_KEY:
+        return stream_name_target
     for key in ["model_input_key", "model_key"]:
         target = _camera_target_from_mapping_key(entry.get(key))
         if target is not None:
@@ -295,7 +318,7 @@ def _camera_target_for_inference(stream_name: str, entry: dict[str, Any]) -> str
         target = _camera_target_from_role(entry.get(key))
         if target is not None:
             return target
-    return _camera_target_from_stream_name(stream_name)
+    return stream_name_target
 
 
 def _mapping_stream_name(value: Any) -> str | None:
@@ -450,6 +473,66 @@ def select_model_camera_streams(
                 f"camera mapping: multiple candidate streams for {target}: {candidates!r}; provide explicit "
                 "metadata.model_camera_mapping or stream model_input_key instead of guessing"
             )
+
+    return selected, errors, selection_sources
+
+
+def _uses_default_three_camera_layout(camera_names: set[str]) -> bool:
+    return bool(camera_names & set(DEFAULT_THREE_CAMERA_STREAM_NAMES))
+
+
+def select_processed_camera_streams(
+    metadata: dict[str, Any] | None,
+    streams_index: dict[str, Any] | None,
+    streams: dict[str, Any] | None,
+) -> tuple[dict[str, str], list[str], dict[str, str]]:
+    """Select raw camera streams for all processed image path keys.
+
+    Legacy raw-real fixtures with ``external_camera`` and ``wrist_camera`` keep
+    the historical two-camera output. The default thesis/raw-real layout uses
+    exact stream names and requires ``external_camera_1``, ``external_camera_2``,
+    and ``tcp_camera`` so the third camera is not guessed or substituted.
+    """
+
+    selected, errors, selection_sources = select_model_camera_streams(metadata, streams_index, streams)
+    if not isinstance(streams, dict):
+        return selected, errors, selection_sources
+
+    camera_names_list = camera_stream_names(streams)
+    camera_names = set(camera_names_list)
+    if not _uses_default_three_camera_layout(camera_names):
+        return selected, errors, selection_sources
+
+    missing = [stream_name for stream_name in DEFAULT_THREE_CAMERA_STREAM_NAMES if stream_name not in camera_names]
+    if missing:
+        errors.append(
+            "camera mapping: default raw-real three-camera layout requires camera streams "
+            f"{DEFAULT_THREE_CAMERA_STREAM_NAMES!r}; missing {missing!r}"
+        )
+        return selected, errors, selection_sources
+
+    assignments, assignment_errors = _collect_explicit_camera_assignments(
+        metadata,
+        streams_index,
+        streams,
+        camera_names,
+    )
+    errors.extend(error for error in assignment_errors if error not in errors)
+
+    external_2_assignment = assignments.get(MODEL_EXTERNAL_CAMERA_2_IMAGE_KEY)
+    if external_2_assignment is not None:
+        external_2_stream, external_2_source = external_2_assignment
+        if external_2_stream != "external_camera_2":
+            errors.append(
+                "camera mapping: external_camera_2_rgb_path must use raw stream 'external_camera_2'; "
+                f"got {external_2_stream!r} from {external_2_source}; refusing substituted third-camera images"
+            )
+            return selected, errors, selection_sources
+        selected[MODEL_EXTERNAL_CAMERA_2_IMAGE_KEY] = external_2_stream
+        selection_sources[MODEL_EXTERNAL_CAMERA_2_IMAGE_KEY] = external_2_source
+    else:
+        selected[MODEL_EXTERNAL_CAMERA_2_IMAGE_KEY] = "external_camera_2"
+        selection_sources[MODEL_EXTERNAL_CAMERA_2_IMAGE_KEY] = "required default raw-real three-camera stream name"
 
     return selected, errors, selection_sources
 
@@ -1386,6 +1469,8 @@ def _validate_camera_index(
                 image_path = root / image_relative
                 if not _is_path_under_root(root, image_path):
                     errors.append(f"{context}: image_path must stay inside episode root")
+                elif not _is_path_under_root(stream_path, image_path):
+                    errors.append(f"{context}: image_path must stay inside camera stream directory")
                 elif not image_path.is_file():
                     errors.append(f"{context}: image_path does not exist: {image_path}")
                 else:
@@ -1720,7 +1805,7 @@ def raw_real_conversion_readiness_errors(
 
     camera_streams = camera_stream_names(streams)
     errors = _source_stamp_alignment_errors(records_by_stream, metadata, streams_index, camera_streams)
-    _, camera_mapping_errors, _ = select_model_camera_streams(metadata, streams_index, streams)
+    _, camera_mapping_errors, _ = select_processed_camera_streams(metadata, streams_index, streams)
     errors.extend(camera_mapping_errors)
     if is_explicit_synthetic_episode(metadata, recorder_report, streams_index):
         return errors

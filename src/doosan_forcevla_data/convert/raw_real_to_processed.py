@@ -28,13 +28,15 @@ from doosan_forcevla_data.schema.raw_real_units import (
 )
 from doosan_forcevla_data.validate.validate_processed_episode import validate_processed_episode
 from doosan_forcevla_data.validate.validate_raw_real_episode import (
+    MODEL_EXTERNAL_CAMERA_2_IMAGE_KEY,
     MODEL_EXTERNAL_IMAGE_KEY,
     MODEL_TCP_IMAGE_KEY,
+    PROCESSED_CAMERA_OUTPUT_KEYS,
     camera_stream_names,
     tcp_orientation_convention_readiness_error,
     is_explicit_synthetic_episode,
     raw_real_conversion_readiness_errors,
-    select_model_camera_streams,
+    select_processed_camera_streams,
     selected_wrench_metadata_for_model_state,
     validate_raw_real_episode,
 )
@@ -49,6 +51,11 @@ PROCESSED_METADATA_SCHEMA_VERSION = "processed_jsonl_v1"
 MODEL_STATE_LAYOUT_VERSION = "doosan_model_state_25d_v1"
 MEASURED_ACTION_LAYOUT_VERSION = "measured_tcp_delta_7d_v1"
 WRENCH_SOURCE_FIELDS = ["tcp_wrench", "measured_tcp_wrench", "external_tcp_force", "raw_force_torque"]
+PROCESSED_CAMERA_MODEL_INPUTS = {
+    MODEL_EXTERNAL_IMAGE_KEY: "observation.image",
+    MODEL_EXTERNAL_CAMERA_2_IMAGE_KEY: "recorded.external_camera_2",
+    MODEL_TCP_IMAGE_KEY: "observation.wrist_image",
+}
 
 
 @dataclass(frozen=True)
@@ -77,6 +84,14 @@ class GripperMetadata:
     is_placeholder: bool
     verified: bool
     valid_for_training: bool
+
+
+@dataclass(frozen=True)
+class ProcessedCameraSpec:
+    frame_key: str
+    raw_stream: str
+    model_input: str
+    selection_source: str
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
@@ -486,13 +501,21 @@ def _require_non_synthetic_gripper_state(
             )
 
 
-def _resolve_raw_image(raw_root: Path, image_path_value: Any, frame_index: int, stream_name: str) -> Path:
+def _resolve_raw_image(
+    raw_root: Path,
+    stream_root: Path,
+    image_path_value: Any,
+    frame_index: int,
+    stream_name: str,
+) -> Path:
     if not isinstance(image_path_value, str) or not image_path_value:
         raise ValueError(f"{stream_name} record {frame_index}: image_path must be a non-empty string")
     relative_path = Path(image_path_value)
     if relative_path.is_absolute() or ".." in relative_path.parts:
         raise ValueError(f"{stream_name} record {frame_index}: image_path must be safe and relative")
     image_path = raw_root / relative_path
+    if not _contains_path(stream_root, image_path):
+        raise ValueError(f"{stream_name} record {frame_index}: image_path must stay inside camera stream directory")
     if not image_path.is_file():
         raise ValueError(f"{stream_name} record {frame_index}: image file does not exist: {image_path}")
     return image_path
@@ -502,12 +525,13 @@ def _frame_image_path(
     *,
     raw_root: Path,
     output_root: Path,
+    stream_root: Path,
     camera_record: dict[str, Any],
     stream_name: str,
     frame_index: int,
     copy_images: bool,
 ) -> str:
-    raw_image = _resolve_raw_image(raw_root, camera_record.get("image_path"), frame_index, stream_name)
+    raw_image = _resolve_raw_image(raw_root, stream_root, camera_record.get("image_path"), frame_index, stream_name)
     if not copy_images:
         return str(Path(str(camera_record["image_path"])))
 
@@ -542,28 +566,129 @@ def _camera_stream_metadata(streams: dict[str, Any], stream_names: list[str]) ->
                 "used_for_model",
                 "record_count",
                 "verified",
+                "camera",
             ]
             if key in entry
         }
     return metadata
 
 
-def _processed_camera_mapping(
+def _processed_camera_specs(
     selected_camera_streams: dict[str, str],
     selection_sources: dict[str, str],
-) -> dict[str, dict[str, str]]:
+) -> list[ProcessedCameraSpec]:
+    specs: list[ProcessedCameraSpec] = []
+    for frame_key in PROCESSED_CAMERA_OUTPUT_KEYS:
+        raw_stream = selected_camera_streams.get(frame_key)
+        if raw_stream is None:
+            continue
+        specs.append(
+            ProcessedCameraSpec(
+                frame_key=frame_key,
+                raw_stream=raw_stream,
+                model_input=PROCESSED_CAMERA_MODEL_INPUTS.get(frame_key, frame_key),
+                selection_source=selection_sources.get(frame_key, "unknown"),
+            )
+        )
+    return specs
+
+
+def _processed_camera_mapping(camera_specs: list[ProcessedCameraSpec]) -> dict[str, dict[str, str]]:
     return {
-        "external_rgb_path": {
-            "raw_stream": selected_camera_streams[MODEL_EXTERNAL_IMAGE_KEY],
-            "model_input": "observation.image",
-            "selection_source": selection_sources.get(MODEL_EXTERNAL_IMAGE_KEY, "unknown"),
-        },
-        "tcp_rgb_path": {
-            "raw_stream": selected_camera_streams[MODEL_TCP_IMAGE_KEY],
-            "model_input": "observation.wrist_image",
-            "selection_source": selection_sources.get(MODEL_TCP_IMAGE_KEY, "unknown"),
-        },
+        spec.frame_key: {
+            "raw_stream": spec.raw_stream,
+            "model_input": spec.model_input,
+            "selection_source": spec.selection_source,
+        }
+        for spec in camera_specs
     }
+
+
+def _camera_record_value(record: dict[str, Any], stream_entry: dict[str, Any], key: str) -> Any:
+    if key in record:
+        return record[key]
+    camera_entry = stream_entry.get("camera")
+    if isinstance(camera_entry, dict) and key in camera_entry:
+        return camera_entry[key]
+    return stream_entry.get(key)
+
+
+def _unique_record_values(records: list[dict[str, Any]], stream_entry: dict[str, Any], key: str) -> list[Any]:
+    values: list[Any] = []
+    for record in records:
+        value = _camera_record_value(record, stream_entry, key)
+        if value not in values:
+            values.append(value)
+    return values
+
+
+def _camera_dimension_metadata(records: list[dict[str, Any]], stream_entry: dict[str, Any]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    for key in ["width", "height", "channels", "encoding", "image_format"]:
+        values = _unique_record_values(records, stream_entry, key)
+        if not values:
+            continue
+        metadata[key] = values[0] if len(values) == 1 else values
+    return metadata
+
+
+def _selected_source_image_paths(
+    camera_by_index: dict[int, dict[str, Any]],
+    ordered_indexes: list[int],
+    stream_name: str,
+) -> list[str]:
+    paths: list[str] = []
+    seen: set[str] = set()
+    for frame_index, record_index in enumerate(ordered_indexes):
+        record = camera_by_index[record_index]
+        image_path = record.get("image_path")
+        if not isinstance(image_path, str) or not image_path:
+            raise ValueError(f"{stream_name} record {frame_index}: image_path must be a non-empty string")
+        if image_path in seen:
+            raise ValueError(
+                f"{stream_name}: selected image_path {image_path!r} is reused; refusing duplicated or substituted images"
+            )
+        seen.add(image_path)
+        paths.append(image_path)
+    return paths
+
+
+def _processed_camera_streams_metadata(
+    *,
+    camera_specs: list[ProcessedCameraSpec],
+    streams: dict[str, Any],
+    camera_by_index: dict[str, dict[int, dict[str, Any]]],
+    ordered_indexes: list[int],
+    copy_images: bool,
+) -> dict[str, dict[str, Any]]:
+    metadata: dict[str, dict[str, Any]] = {}
+    for spec in camera_specs:
+        stream_entry = _stream_entry(streams, spec.raw_stream)
+        selected_paths = _selected_source_image_paths(camera_by_index[spec.raw_stream], ordered_indexes, spec.raw_stream)
+        suffixes = _unique_preserving_order([Path(path).suffix for path in selected_paths])
+        suffix_pattern = suffixes[0] if len(suffixes) == 1 else "<source_suffix>"
+        entry: dict[str, Any] = {
+            "camera_name": spec.raw_stream,
+            "raw_stream": spec.raw_stream,
+            "frame_key": spec.frame_key,
+            "model_input": spec.model_input,
+            "selection_source": spec.selection_source,
+            "selection_policy": "record_index equality against robot_state_rt primary timeline",
+            "source_path_key": "image_path",
+            "source_record_count": len(camera_by_index[spec.raw_stream]),
+            "frame_count": len(ordered_indexes),
+            "image_count": len(selected_paths),
+            "unique_source_image_count": len(set(selected_paths)),
+            "source_image_paths_unique": len(set(selected_paths)) == len(selected_paths),
+            "output_dir": f"images/{spec.raw_stream}" if copy_images else None,
+            "output_filename_pattern": f"images/{spec.raw_stream}/{{frame_index:06d}}{suffix_pattern}" if copy_images else "raw-real relative image_path",
+            "copy_policy": "byte_copy_shutil.copy2" if copy_images else "reference_raw_real_relative_path",
+            "output_paths_are_relative_to_processed_episode": bool(copy_images),
+            "raw_paths_are_relative_to_source_raw_episode": True,
+        }
+        entry.update(_camera_dimension_metadata(list(camera_by_index[spec.raw_stream].values()), stream_entry))
+        metadata[spec.raw_stream] = entry
+    return metadata
 
 
 def _contains_path(parent: Path, child: Path) -> bool:
@@ -1061,13 +1186,12 @@ def convert_raw_real_to_processed(
     if not robot_records:
         raise ValueError("robot_state_rt stream must contain at least one record")
     joint_records = _read_jsonl_objects(_stream_path(raw_root, streams, "joint_states"))
-    selected_camera_streams, camera_mapping_errors, camera_selection_sources = select_model_camera_streams(
+    selected_camera_streams, camera_mapping_errors, camera_selection_sources = select_processed_camera_streams(
         metadata, streams_index, streams
     )
     if camera_mapping_errors:
         raise ValueError("raw-real camera mapping is not ready for conversion:\n" + "\n".join(camera_mapping_errors))
-    external_camera_stream = selected_camera_streams[MODEL_EXTERNAL_IMAGE_KEY]
-    tcp_camera_stream = selected_camera_streams[MODEL_TCP_IMAGE_KEY]
+    camera_specs = _processed_camera_specs(selected_camera_streams, camera_selection_sources)
     declared_camera_streams = camera_stream_names(streams)
     camera_records_by_stream = {
         stream_name: _load_camera_index(raw_root, streams, stream_name)
@@ -1080,8 +1204,6 @@ def convert_raw_real_to_processed(
         stream_name: _records_by_index(records, stream_name)
         for stream_name, records in camera_records_by_stream.items()
     }
-    external_camera_by_index = camera_by_index[external_camera_stream]
-    tcp_camera_by_index = camera_by_index[tcp_camera_stream]
     primary_indexes = set(robot_by_index)
 
     _require_aligned_indexes(primary_indexes, joint_by_index, "joint_states")
@@ -1136,6 +1258,8 @@ def convert_raw_real_to_processed(
         raise ValueError(f"raw-real conversion requires at least 2 aligned records; got {len(ordered_indexes)}")
     ordered_robot_records = [robot_by_index[index] for index in ordered_indexes]
     timestamps = _relative_timestamps(ordered_robot_records)
+    for spec in camera_specs:
+        _selected_source_image_paths(camera_by_index[spec.raw_stream], ordered_indexes, spec.raw_stream)
 
     if not synthetic:
         _require_non_synthetic_gripper_state(primary_indexes, gripper_by_index)
@@ -1172,31 +1296,28 @@ def convert_raw_real_to_processed(
         wrench_sources.add(wrench_source)
         joint_sources.add(joint_source)
 
-        frames.append(
+        frame: dict[str, Any] = {
+            "frame_index": frame_index,
+            "timestamp": timestamps[frame_index],
+        }
+        for spec in camera_specs:
+            frame[spec.frame_key] = _frame_image_path(
+                raw_root=raw_root,
+                output_root=output_root,
+                stream_root=_stream_path(raw_root, streams, spec.raw_stream),
+                camera_record=camera_by_index[spec.raw_stream][record_index],
+                stream_name=spec.raw_stream,
+                frame_index=frame_index,
+                copy_images=copy_images,
+            )
+        frame.update(
             {
-                "frame_index": frame_index,
-                "timestamp": timestamps[frame_index],
-                "external_rgb_path": _frame_image_path(
-                    raw_root=raw_root,
-                    output_root=output_root,
-                    camera_record=external_camera_by_index[record_index],
-                    stream_name=external_camera_stream,
-                    frame_index=frame_index,
-                    copy_images=copy_images,
-                ),
-                "tcp_rgb_path": _frame_image_path(
-                    raw_root=raw_root,
-                    output_root=output_root,
-                    camera_record=tcp_camera_by_index[record_index],
-                    stream_name=tcp_camera_stream,
-                    frame_index=frame_index,
-                    copy_images=copy_images,
-                ),
                 "model_state": model_state,
                 "measured_action": [0.0] * ACTION_DIM,
                 "action_is_terminal_padding": True,
             }
         )
+        frames.append(frame)
 
     for frame_index, frame in enumerate(frames):
         if frame_index == len(frames) - 1:
@@ -1229,6 +1350,13 @@ def convert_raw_real_to_processed(
     )
     measured_action_layout = _build_measured_action_layout(gripper_metadata)
     terminal_policy = _terminal_action_policy(len(frames))
+    processed_camera_streams = _processed_camera_streams_metadata(
+        camera_specs=camera_specs,
+        streams=streams,
+        camera_by_index=camera_by_index,
+        ordered_indexes=ordered_indexes,
+        copy_images=copy_images,
+    )
     placeholder_fields = []
     if gripper_metadata.is_placeholder:
         placeholder_fields.extend(["model_state[6].gripper_position", "measured_action[6].gripper_action"])
@@ -1290,11 +1418,16 @@ def convert_raw_real_to_processed(
         "selected_streams": {
             "primary_timeline": "robot_state_rt",
             "joint_states": "record_index aligned fallback only when robot_state_rt joint vectors are unavailable",
-            "external_rgb_path": f"{external_camera_stream}.image_path",
-            "tcp_rgb_path": f"{tcp_camera_stream}.image_path",
+            **{spec.frame_key: f"{spec.raw_stream}.image_path" for spec in camera_specs},
             "gripper_state": gripper_metadata.state_source,
         },
-        "camera_mapping": _processed_camera_mapping(selected_camera_streams, camera_selection_sources),
+        "camera_mapping": _processed_camera_mapping(camera_specs),
+        "processed_camera_schema_version": "processed_camera_streams_v1",
+        "processed_camera_names": [spec.raw_stream for spec in camera_specs],
+        "processed_camera_frame_keys": [spec.frame_key for spec in camera_specs],
+        "processed_camera_count": len(camera_specs),
+        "required_camera_streams": [spec.raw_stream for spec in camera_specs],
+        "processed_camera_streams": processed_camera_streams,
         "raw_camera_streams": _camera_stream_metadata(streams, declared_camera_streams),
         "unit_conversions": {
             "tcp_position": tcp_position_conversion_text,
@@ -1341,11 +1474,16 @@ def convert_raw_real_to_processed(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Convert a raw_real_v0 episode to processed JSONL.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Convert a raw_real_v0 episode to processed JSONL, preserving the default "
+            "external_camera_1, external_camera_2, and tcp_camera streams when present."
+        )
+    )
     parser.add_argument("--raw-real", required=True, help="Raw-real episode directory")
     parser.add_argument("--output", required=True, help="Processed episode output directory")
     parser.add_argument("--overwrite", action="store_true", help="Replace an existing output directory")
-    parser.add_argument("--copy-images", action="store_true", help="Copy images into the processed episode")
+    parser.add_argument("--copy-images", action="store_true", help="Copy selected camera images into processed images/<camera>/")
     parser.add_argument(
         "--include-optional-debug",
         action="store_true",

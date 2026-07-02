@@ -44,6 +44,15 @@ def _shift_camera_source_stamps(episode: Path, offset_sec: float) -> None:
             record["source_stamp"] = float(record["source_stamp"]) + offset_sec
         _write_jsonl(index_path, records)
 
+
+def _shift_stream_source_stamps(episode: Path, stream_names: list[str], offset_sec: float) -> None:
+    for stream_name in stream_names:
+        index_path = episode / "streams" / stream_name / "index.jsonl"
+        records = _read_jsonl(index_path)
+        for record in records:
+            record["source_stamp"] = float(record["source_stamp"]) + offset_sec
+        _write_jsonl(index_path, records)
+
 def _valid_wrench_sources_metadata() -> dict:
     return {
         "tcp_wrench": {
@@ -264,6 +273,47 @@ def _truncate_to_one_aligned_record(episode: Path) -> None:
 
 
 class RawRealToProcessedTests(unittest.TestCase):
+    @unittest.skipUnless(
+        os.environ.get("DOOSAN_RUN_REAL_FIXTURE_TESTS") == "1",
+        "set DOOSAN_RUN_REAL_FIXTURE_TESTS=1 to run external real-fixture conversion smoke test",
+    )
+    def test_real_fixture_three_camera_conversion_matches_corrected_reference(self):
+        raw_episode = Path(
+            "/home/horus/robotics_thesis/episode_compare/robot_episode/Adapted raw_real_v0/"
+            "raw_real_no_contact_heartbeat_check_20260701_160835"
+        )
+        reference_episode = Path(
+            "/home/horus/robotics_thesis/episode_compare/robot_episode/Reprocessed ForceVLA-style/"
+            "processed_after_tcp_semantics_fix_20260702_145237"
+        )
+        if not raw_episode.is_dir() or not reference_episode.is_dir():
+            self.skipTest("authorized external real fixture paths are not available")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "processed_three_camera"
+            convert_raw_real_to_processed(raw_episode, output, copy_images=True)
+
+            result = validate_processed_episode(output)
+            self.assertTrue(result.ok, result.errors)
+
+            frames = _read_jsonl(output / "frames.jsonl")
+            reference_frames = _read_jsonl(reference_episode / "frames.jsonl")
+            self.assertEqual(len(frames), 242)
+            self.assertEqual(len(reference_frames), 242)
+            for stream_name in ["external_camera_1", "external_camera_2", "tcp_camera"]:
+                image_files = [path for path in (output / "images" / stream_name).iterdir() if path.is_file()]
+                self.assertEqual(len(image_files), 242)
+
+            for frame, reference in zip(frames, reference_frames, strict=True):
+                self.assertEqual(frame["frame_index"], reference["frame_index"])
+                self.assertEqual(frame["timestamp"], reference["timestamp"])
+                self.assertEqual(frame["model_state"], reference["model_state"])
+                self.assertEqual(frame["measured_action"], reference["measured_action"])
+                self.assertEqual(frame["action_is_terminal_padding"], reference["action_is_terminal_padding"])
+                self.assertEqual(frame["external_rgb_path"], reference["external_rgb_path"])
+                self.assertEqual(frame["tcp_rgb_path"], reference["tcp_rgb_path"])
+                self.assertIn("external_camera_2_rgb_path", frame)
+
     def test_synthetic_raw_real_episode_converts_and_validates(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -495,25 +545,157 @@ class RawRealToProcessedTests(unittest.TestCase):
             self.assertEqual(manifest["image_streams"]["observation.image"]["raw_camera_stream"], "external_camera_1")
             self.assertEqual(manifest["image_streams"]["observation.wrist_image"]["raw_camera_stream"], "tcp_camera")
 
-    def test_ambiguous_external_camera_mapping_fails_instead_of_guessing(self):
+    def test_thesis_camera_layout_copies_all_three_camera_streams(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            raw_episode = root / "raw_real" / "episode_ambiguous"
-            processed_episode = root / "processed" / "episode_ambiguous"
+            raw_episode = root / "raw_real" / "episode_three_camera"
+            processed_episode = root / "processed" / "episode_three_camera"
+
+            make_synthetic_raw_real_episode(
+                raw_episode,
+                frame_count=5,
+                include_optional_streams=True,
+                camera_layout="thesis",
+            )
+
+            convert_raw_real_to_processed(raw_episode, processed_episode, copy_images=True)
+
+            result = validate_processed_episode(processed_episode)
+            self.assertTrue(result.ok, result.errors)
+            metadata = _read_json(processed_episode / "metadata_processed.json")
+            frames = _read_jsonl(processed_episode / "frames.jsonl")
+
+            self.assertEqual(metadata["processed_camera_schema_version"], "processed_camera_streams_v1")
+            self.assertEqual(metadata["processed_camera_names"], ["external_camera_1", "external_camera_2", "tcp_camera"])
+            self.assertEqual(metadata["processed_camera_count"], 3)
+            self.assertEqual(metadata["processed_camera_streams"]["external_camera_2"]["frame_key"], "external_camera_2_rgb_path")
+            self.assertEqual(metadata["processed_camera_streams"]["external_camera_2"]["frame_count"], 5)
+            self.assertEqual(metadata["processed_camera_streams"]["external_camera_2"]["image_count"], 5)
+            self.assertTrue(metadata["processed_camera_streams"]["external_camera_2"]["source_image_paths_unique"])
+            self.assertEqual(metadata["camera_mapping"]["external_camera_2_rgb_path"]["raw_stream"], "external_camera_2")
+            self.assertEqual(metadata["selected_streams"]["external_camera_2_rgb_path"], "external_camera_2.image_path")
+
+            for frame in frames:
+                self.assertIn("external_rgb_path", frame)
+                self.assertIn("external_camera_2_rgb_path", frame)
+                self.assertIn("tcp_rgb_path", frame)
+                self.assertEqual(
+                    frame["external_camera_2_rgb_path"],
+                    f"images/external_camera_2/{frame['frame_index']:06d}.ppm",
+                )
+                self.assertTrue((processed_episode / frame["external_rgb_path"]).is_file())
+                self.assertTrue((processed_episode / frame["external_camera_2_rgb_path"]).is_file())
+                self.assertTrue((processed_episode / frame["tcp_rgb_path"]).is_file())
+
+            for stream_name in ["external_camera_1", "external_camera_2", "tcp_camera"]:
+                image_files = [path for path in (processed_episode / "images" / stream_name).iterdir() if path.is_file()]
+                self.assertEqual(len(image_files), 5)
+
+            raw_external_2 = raw_episode / "streams" / "external_camera_2" / "frames" / "000000.ppm"
+            processed_external_2 = processed_episode / frames[0]["external_camera_2_rgb_path"]
+            self.assertEqual(processed_external_2.read_bytes(), raw_external_2.read_bytes())
+
+    def test_thesis_camera_layout_missing_external_camera_2_reference_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_missing_reference"
+            processed_episode = root / "processed" / "episode_missing_reference"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4, camera_layout="thesis")
+
+            index_path = raw_episode / "streams" / "external_camera_2" / "index.jsonl"
+            records = _read_jsonl(index_path)
+            del records[0]["image_path"]
+            _write_jsonl(index_path, records)
+
+            validation = validate_raw_real_episode(raw_episode)
+            self.assertFalse(validation.ok)
+            self.assertTrue(any("external_camera_2 camera record 0" in error and "image_path" in error for error in validation.errors))
+            with self.assertRaisesRegex(ValueError, "external_camera_2.*image_path"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+            self.assertFalse(processed_episode.exists())
+
+    def test_thesis_camera_layout_missing_external_camera_2_file_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_missing_file"
+            processed_episode = root / "processed" / "episode_missing_file"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4, camera_layout="thesis")
+
+            (raw_episode / "streams" / "external_camera_2" / "frames" / "000000.ppm").unlink()
+
+            validation = validate_raw_real_episode(raw_episode)
+            self.assertFalse(validation.ok)
+            self.assertTrue(any("external_camera_2 camera record 0" in error and "does not exist" in error for error in validation.errors))
+            with self.assertRaisesRegex(ValueError, "external_camera_2.*does not exist"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+            self.assertFalse(processed_episode.exists())
+
+    def test_thesis_camera_layout_external_camera_2_duplicate_source_path_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_duplicate_ext2"
+            processed_episode = root / "processed" / "episode_duplicate_ext2"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4, camera_layout="thesis")
+
+            index_path = raw_episode / "streams" / "external_camera_2" / "index.jsonl"
+            records = _read_jsonl(index_path)
+            records[1]["image_path"] = records[0]["image_path"]
+            _write_jsonl(index_path, records)
+
+            with self.assertRaisesRegex(ValueError, "selected image_path.*reused"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+            self.assertFalse(processed_episode.exists())
+
+    def test_thesis_camera_layout_external_camera_2_substitution_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_substitute_ext2"
+            processed_episode = root / "processed" / "episode_substitute_ext2"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4, camera_layout="thesis")
+
+            index_path = raw_episode / "streams" / "external_camera_2" / "index.jsonl"
+            records = _read_jsonl(index_path)
+            records[0]["image_path"] = "streams/external_camera_1/frames/000000.ppm"
+            _write_jsonl(index_path, records)
+
+            validation = validate_raw_real_episode(raw_episode)
+            self.assertFalse(validation.ok)
+            self.assertTrue(any("camera stream directory" in error for error in validation.errors))
+            with self.assertRaisesRegex(ValueError, "camera stream directory"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+            self.assertFalse(processed_episode.exists())
+
+    def test_thesis_camera_layout_external_camera_2_source_stamp_offset_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_ext2_offset"
+            processed_episode = root / "processed" / "episode_ext2_offset"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4, fps=30.0, camera_layout="thesis")
+            _shift_stream_source_stamps(raw_episode, ["external_camera_2"], 0.05)
+
+            validation = validate_raw_real_episode(raw_episode)
+            self.assertFalse(validation.ok)
+            self.assertTrue(any("external_camera_2" in error and "source_stamp differs" in error for error in validation.errors))
+            with self.assertRaisesRegex(ValueError, "external_camera_2.*source_stamp differs"):
+                convert_raw_real_to_processed(raw_episode, processed_episode)
+            self.assertFalse(processed_episode.exists())
+
+    def test_substituted_external_camera_2_mapping_fails_instead_of_guessing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_bad_ext2_mapping"
+            processed_episode = root / "processed" / "episode_bad_ext2_mapping"
             make_synthetic_raw_real_episode(raw_episode, frame_count=4, camera_layout="thesis")
 
             streams_path = raw_episode / "streams" / "index.json"
             streams_index = _read_json(streams_path)
-            streams_index.pop("model_camera_mapping", None)
-            external_1 = streams_index["streams"]["external_camera_1"]
-            external_1.pop("model_input_key", None)
-            external_1["used_for_model"] = False
+            streams_index["model_camera_mapping"]["external_camera_2_rgb_path"] = "external_camera_1"
             _write_json(streams_path, streams_index)
 
             validation = validate_raw_real_episode(raw_episode)
             self.assertFalse(validation.ok)
-            self.assertTrue(any("multiple candidate streams for external_rgb_path" in error for error in validation.errors))
-            with self.assertRaisesRegex(ValueError, "multiple candidate streams for external_rgb_path"):
+            self.assertTrue(any("external_camera_2_rgb_path must use raw stream 'external_camera_2'" in error for error in validation.errors))
+            with self.assertRaisesRegex(ValueError, "external_camera_2_rgb_path must use raw stream 'external_camera_2'"):
                 convert_raw_real_to_processed(raw_episode, processed_episode)
 
     def test_non_synthetic_placeholder_gripper_is_not_training_ready(self):

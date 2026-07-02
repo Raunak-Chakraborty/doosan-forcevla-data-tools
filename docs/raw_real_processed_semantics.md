@@ -18,6 +18,30 @@ Conversion rules:
 
 Unit declarations may come from per-row `units`, stream `units`, `actual_tcp_position_units`, or metadata-level unit fields. Conflicting declarations fail explicitly.
 
+## Processed Camera Streams
+
+The default raw-real camera layout is preserved by source camera name:
+
+- `external_camera_1`
+- `external_camera_2`
+- `tcp_camera`
+
+Processed frames keep the existing compatibility keys and add the third camera key:
+
+```text
+external_rgb_path            -> external_camera_1
+external_camera_2_rgb_path   -> external_camera_2
+tcp_rgb_path                 -> tcp_camera
+```
+
+When images are copied, each stream is copied byte-for-byte to `images/<camera_name>/{frame_index:06d}<source_suffix>`. Images are not resized, cropped, mirrored, rotated, recolored, recompressed, or symlinked.
+
+The converter pairs camera records by the adapted raw-real `record_index` timeline after raw validation has checked camera/robot timestamp alignment. It uses the explicit `image_path` in each camera stream record and does not rematch images by sorted filename order.
+
+`metadata_processed.json` includes `processed_camera_schema_version="processed_camera_streams_v1"`, `processed_camera_names`, `processed_camera_frame_keys`, `processed_camera_count`, `camera_mapping`, and per-camera `processed_camera_streams` entries with counts, dimensions, source stream, frame key, output directory, and copy policy.
+
+This is not the LeRobot mapping. Future export may map these cameras to LeRobot keys, but this processed JSONL contract preserves the raw source names.
+
 ## TCP Orientation Conversion
 
 Accepted orientation conventions are:

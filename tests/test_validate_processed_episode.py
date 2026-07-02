@@ -16,6 +16,16 @@ def _write_json(path: Path, data: dict) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
+def _read_jsonl(path: Path) -> list[dict]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _write_jsonl(path: Path, records: list[dict]) -> None:
+    with path.open("w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+
+
 class ValidateProcessedEpisodeTests(unittest.TestCase):
     def test_new_processed_metadata_requires_state_and_action_layouts(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -72,6 +82,56 @@ class ValidateProcessedEpisodeTests(unittest.TestCase):
 
             self.assertFalse(result.ok)
             self.assertTrue(any("placeholder" in error and "measured" in error for error in result.errors))
+
+    def test_three_camera_metadata_requires_external_camera_2_frame_key(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_three_camera"
+            processed_episode = root / "processed" / "episode_three_camera"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4, camera_layout="thesis")
+            convert_raw_real_to_processed(raw_episode, processed_episode, copy_images=True)
+
+            frames_path = processed_episode / "frames.jsonl"
+            frames = _read_jsonl(frames_path)
+            del frames[0]["external_camera_2_rgb_path"]
+            _write_jsonl(frames_path, frames)
+
+            result = validate_processed_episode(processed_episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("external_camera_2_rgb_path" in error for error in result.errors))
+
+    def test_three_camera_metadata_missing_copied_external_camera_2_file_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_three_camera_missing_file"
+            processed_episode = root / "processed" / "episode_three_camera_missing_file"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4, camera_layout="thesis")
+            convert_raw_real_to_processed(raw_episode, processed_episode, copy_images=True)
+
+            (processed_episode / "images" / "external_camera_2" / "000000.ppm").unlink()
+
+            result = validate_processed_episode(processed_episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("external_camera_2_rgb_path" in error and "does not exist" in error for error in result.errors))
+
+    def test_three_camera_metadata_detects_substituted_external_camera_2_bytes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_three_camera_substituted"
+            processed_episode = root / "processed" / "episode_three_camera_substituted"
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4, camera_layout="thesis")
+            convert_raw_real_to_processed(raw_episode, processed_episode, copy_images=True)
+
+            external_1 = processed_episode / "images" / "external_camera_1" / "000000.ppm"
+            external_2 = processed_episode / "images" / "external_camera_2" / "000000.ppm"
+            external_2.write_bytes(external_1.read_bytes())
+
+            result = validate_processed_episode(processed_episode)
+
+            self.assertFalse(result.ok)
+            self.assertTrue(any("external_camera_2_rgb_path bytes do not match raw external_camera_2" in error for error in result.errors))
 
 
 if __name__ == "__main__":

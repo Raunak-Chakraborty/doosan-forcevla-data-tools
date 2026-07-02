@@ -25,7 +25,7 @@ from doosan_forcevla_data.validate.validate_raw_real_episode import (
     is_explicit_synthetic_episode,
     is_camera_stream_entry,
     raw_real_conversion_readiness_errors,
-    select_model_camera_streams,
+    select_processed_camera_streams,
     tcp_orientation_convention_readiness_error,
     validate_raw_real_episode,
 )
@@ -719,7 +719,7 @@ def inspect_raw_real_episode(
         root_dir=root,
         calibration_refs=calibration_refs,
     )
-    selected_camera_streams, camera_mapping_errors, camera_selection_sources = select_model_camera_streams(
+    selected_camera_streams, camera_mapping_errors, camera_selection_sources = select_processed_camera_streams(
         metadata, streams_index, streams
     )
 

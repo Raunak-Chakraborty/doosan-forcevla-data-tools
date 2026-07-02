@@ -188,6 +188,61 @@ def _mark_gripper_state_real(episode: Path) -> None:
     _write_jsonl(gripper_path, records)
 
 
+def _set_tcp_poses_and_units(
+    episode: Path,
+    poses: list[list[float]],
+    *,
+    position_unit: str,
+    orientation_unit: str,
+    declaration_source: str,
+) -> None:
+    metadata_path = episode / "metadata.json"
+    metadata = _read_json(metadata_path)
+    metadata.pop("tcp_position_unit", None)
+    metadata.pop("tcp_orientation_unit", None)
+    metadata.pop("actual_tcp_position_units", None)
+
+    index_path = episode / "streams" / "index.json"
+    index = _read_json(index_path)
+    robot_entry = index["streams"]["robot_state_rt"]
+    robot_entry.setdefault("units", {})
+    robot_entry.pop("actual_tcp_position_units", None)
+
+    robot_path = episode / "streams" / "robot_state_rt.jsonl"
+    robot_records = _read_jsonl(robot_path)
+    if len(poses) != len(robot_records):
+        raise ValueError("poses length must match robot_state_rt record count")
+    for idx in range(len(poses)):
+        robot_records[idx]["actual_tcp_position"] = list(poses[idx])
+    for record in robot_records:
+        record.setdefault("units", {})
+        record.pop("actual_tcp_position_units", None)
+
+    if declaration_source == "metadata":
+        metadata["actual_tcp_position_units"] = [position_unit] * 3 + [orientation_unit] * 3
+        robot_entry["units"].pop("tcp_position", None)
+        robot_entry["units"].pop("tcp_orientation", None)
+        for record in robot_records:
+            record["units"].pop("tcp_position", None)
+            record["units"].pop("tcp_orientation", None)
+    elif declaration_source == "record":
+        robot_entry["units"]["tcp_position"] = position_unit
+        robot_entry["units"]["tcp_orientation"] = orientation_unit
+        for record in robot_records:
+            record["units"]["tcp_position"] = position_unit
+            record["units"]["tcp_orientation"] = orientation_unit
+    else:
+        raise ValueError("declaration_source must be 'metadata' or 'record'")
+
+    _write_json(metadata_path, metadata)
+    _write_json(index_path, index)
+    _write_jsonl(robot_path, robot_records)
+
+
+def _layout_indexes(layout: list[dict]) -> list[int]:
+    return [entry["index"] for entry in layout]
+
+
 def _truncate_to_one_aligned_record(episode: Path) -> None:
     streams_index_path = episode / "streams" / "index.json"
     streams_index = _read_json(streams_index_path)
@@ -257,6 +312,150 @@ class RawRealToProcessedTests(unittest.TestCase):
             self.assertEqual(frames[-1]["measured_action"], [0.0] * ACTION_DIM)
             self.assertTrue(has_nonzero_translation)
             self.assertTrue(has_nonzero_rotation)
+
+    def test_non_synthetic_metadata_meters_and_radians_are_preserved_without_double_conversion(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_m_rad"
+            processed_episode = root / "processed" / "episode_m_rad"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=3, include_optional_streams=True)
+            _mark_non_synthetic(raw_episode, convention="rotation_vector_radians")
+            _mark_gripper_state_real(raw_episode)
+            _set_tcp_poses_and_units(
+                raw_episode,
+                [
+                    [0.7, 0.1, 0.3, 0.0, 0.0, 0.0],
+                    [0.8, 0.1, 0.3, 0.0, 0.0, math.pi / 2.0],
+                    [0.8, 0.2, 0.3, 0.0, 0.0, math.pi / 2.0],
+                ],
+                position_unit="m",
+                orientation_unit="rad",
+                declaration_source="metadata",
+            )
+
+            validation = validate_raw_real_episode(raw_episode)
+            self.assertTrue(validation.ok, validation.errors)
+            convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            result = validate_processed_episode(processed_episode)
+            self.assertTrue(result.ok, result.errors)
+            metadata = _read_json(processed_episode / "metadata_processed.json")
+            frames = _read_jsonl(processed_episode / "frames.jsonl")
+
+            self.assertEqual(frames[0]["model_state"][:3], [0.7, 0.1, 0.3])
+            self.assertEqual(frames[0]["model_state"][3:6], [0.0, 0.0, 0.0])
+            self.assertAlmostEqual(frames[1]["model_state"][5], math.pi / 2.0)
+            self.assertAlmostEqual(frames[0]["measured_action"][0], 0.1)
+            self.assertAlmostEqual(frames[0]["measured_action"][5], math.pi / 2.0)
+
+            self.assertEqual(metadata["tcp_position_source_unit"], "m")
+            self.assertEqual(metadata["tcp_position_conversion"], "preserved_meters")
+            self.assertTrue(metadata["tcp_position_values_preserved"])
+            self.assertEqual(metadata["tcp_orientation_source_convention"], "rotation_vector_radians")
+            self.assertEqual(metadata["tcp_orientation_source_unit"], "rad")
+            self.assertEqual(metadata["tcp_orientation_conversion"], "preserved_rotation_vector_radians")
+            self.assertTrue(metadata["tcp_orientation_values_preserved"])
+            self.assertNotIn("treating actual_tcp_position[3:6] as rotation vector in degrees", json.dumps(metadata))
+
+            self.assertEqual(len(metadata["model_state_layout"]), MODEL_STATE_DIM)
+            self.assertEqual(_layout_indexes(metadata["model_state_layout"]), list(range(MODEL_STATE_DIM)))
+            self.assertEqual(metadata["model_state_layout"][0]["name"], "tcp_x_m")
+            self.assertEqual(metadata["model_state_layout"][0]["unit"], "m")
+            self.assertEqual(metadata["model_state_layout"][0]["source"], "robot_state_rt.actual_tcp_position[0]")
+            self.assertEqual(metadata["model_state_layout"][5]["name"], "tcp_rotvec_z_rad")
+            self.assertEqual(metadata["model_state_layout"][5]["unit"], "rad")
+            self.assertEqual(len(metadata["measured_action_layout"]), ACTION_DIM)
+            self.assertEqual(_layout_indexes(metadata["measured_action_layout"]), list(range(ACTION_DIM)))
+            self.assertEqual(metadata["measured_action_layout"][5]["delta_convention"], "relative_rotation_log_map")
+            self.assertIn("conjugate(q_t) * q_t1", metadata["rotation_composition_order"])
+            self.assertIn("conjugate(q_t) * q_t1", metadata["measured_action_layout"][5]["rotation_composition_order"])
+
+            padding_indices = [idx for idx, frame in enumerate(frames) if frame["action_is_terminal_padding"]]
+            self.assertEqual(padding_indices, [len(frames) - 1])
+            self.assertEqual(metadata["terminal_action_policy"]["padding_count"], 1)
+            self.assertEqual(metadata["terminal_action_policy"]["terminal_padding_frame_indices"], padding_indices)
+            self.assertEqual(metadata["terminal_action_policy"]["padding_value"], [0.0] * ACTION_DIM)
+            self.assertTrue(metadata["terminal_action_policy"]["exporters_must_exclude_terminal_padding_rows"])
+            plan = build_lerobot_export_plan(processed_episode, "forcevla_13d")
+            self.assertEqual(plan["excluded_terminal_padding_frame_count"], 1)
+            self.assertEqual(plan["exported_frame_count"], len(frames) - 1)
+
+    def test_non_synthetic_millimeters_and_degrees_convert_once(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_mm_deg"
+            processed_episode = root / "processed" / "episode_mm_deg"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=3, include_optional_streams=True)
+            _mark_non_synthetic(raw_episode, convention="rotation_vector_degrees")
+            _mark_gripper_state_real(raw_episode)
+            _set_tcp_poses_and_units(
+                raw_episode,
+                [
+                    [700.0, 100.0, 300.0, 0.0, 0.0, 0.0],
+                    [800.0, 100.0, 300.0, 0.0, 0.0, 90.0],
+                    [800.0, 200.0, 300.0, 0.0, 0.0, 90.0],
+                ],
+                position_unit="mm",
+                orientation_unit="deg",
+                declaration_source="record",
+            )
+
+            convert_raw_real_to_processed(raw_episode, processed_episode)
+            metadata = _read_json(processed_episode / "metadata_processed.json")
+            frames = _read_jsonl(processed_episode / "frames.jsonl")
+
+            self.assertEqual(frames[0]["model_state"][:3], [0.7, 0.1, 0.3])
+            self.assertAlmostEqual(frames[1]["model_state"][5], math.pi / 2.0)
+            self.assertAlmostEqual(frames[0]["measured_action"][0], 0.1)
+            self.assertAlmostEqual(frames[0]["measured_action"][5], math.pi / 2.0)
+            self.assertEqual(metadata["tcp_position_source_unit"], "mm")
+            self.assertEqual(metadata["tcp_position_conversion"], "millimeters_to_meters_divide_by_1000")
+            self.assertEqual(metadata["tcp_orientation_source_convention"], "rotation_vector_degrees")
+            self.assertEqual(metadata["tcp_orientation_source_unit"], "deg")
+            self.assertEqual(
+                metadata["tcp_orientation_conversion"],
+                "rotation_vector_degrees_to_radians_multiply_by_pi_over_180",
+            )
+
+    def test_synthetic_placeholder_gripper_and_unverified_wrench_provenance_are_preserved(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_placeholder_provenance"
+            processed_episode = root / "processed" / "episode_placeholder_provenance"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4, include_optional_streams=True, camera_layout="thesis")
+            convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            metadata = _read_json(processed_episode / "metadata_processed.json")
+            self.assertTrue(metadata["gripper_state_is_placeholder"])
+            self.assertEqual(metadata["gripper_state_provenance"], "synthetic_placeholder")
+            self.assertFalse(metadata["gripper_state_valid_for_training"])
+            self.assertNotIn("measured", metadata["selected_streams"]["gripper_state"])
+            self.assertIn("model_state[6].gripper_position", metadata["placeholder_fields"])
+            wrench_metadata = metadata["wrench_source_metadata"]["tcp_wrench"]
+            self.assertFalse(wrench_metadata["verified"])
+            self.assertFalse(wrench_metadata["approved_for_training"])
+
+    def test_real_gripper_provenance_remains_measured_when_declared_real(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            raw_episode = root / "raw_real" / "episode_real_gripper_provenance"
+            processed_episode = root / "processed" / "episode_real_gripper_provenance"
+
+            make_synthetic_raw_real_episode(raw_episode, frame_count=4, include_optional_streams=True)
+            _mark_non_synthetic(raw_episode, convention="rotation_vector_degrees")
+            _mark_gripper_state_real(raw_episode)
+
+            convert_raw_real_to_processed(raw_episode, processed_episode)
+
+            metadata = _read_json(processed_episode / "metadata_processed.json")
+            self.assertFalse(metadata["gripper_state_is_placeholder"])
+            self.assertEqual(metadata["gripper_state_provenance"], "real_measured")
+            self.assertTrue(metadata["gripper_state_verified"])
+            self.assertTrue(metadata["gripper_state_valid_for_training"])
+            self.assertEqual(metadata["selected_streams"]["gripper_state"], "record_index aligned measured gripper_state stream")
 
     def test_thesis_camera_layout_synthetic_placeholder_gripper_converts_and_exports(self):
         with tempfile.TemporaryDirectory() as tmpdir:

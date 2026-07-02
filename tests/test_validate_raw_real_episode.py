@@ -833,6 +833,10 @@ class ValidateRawRealEpisodeTests(unittest.TestCase):
             for record in robot_records:
                 record["units"]["tcp_orientation"] = "rad"
             _write_jsonl(robot_path, robot_records)
+            index_path = episode / "streams" / "index.json"
+            index = _read_json(index_path)
+            index["streams"]["robot_state_rt"]["units"]["tcp_orientation"] = "rad"
+            _write_json(index_path, index)
 
             result = validate_raw_real_episode(episode)
 

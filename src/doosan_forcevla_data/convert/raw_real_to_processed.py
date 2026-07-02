@@ -11,6 +11,7 @@ import argparse
 import json
 import math
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,11 @@ from doosan_forcevla_data.schema.processed_schema import (
     ACTION_DIM,
     MODEL_STATE_DIM,
     QUATERNION_CONVENTION,
+)
+from doosan_forcevla_data.schema.raw_real_units import (
+    UnitResolution,
+    resolve_tcp_orientation_unit,
+    resolve_tcp_position_unit,
 )
 from doosan_forcevla_data.validate.validate_processed_episode import validate_processed_episode
 from doosan_forcevla_data.validate.validate_raw_real_episode import (
@@ -38,7 +44,39 @@ DATASET_NAME = "doosan_peg_in_hole_v0"
 CONVERTER_VERSION = "raw_real_to_processed_v0"
 ROTATION_VECTOR_DEGREES = "rotation_vector_degrees"
 ROTATION_VECTOR_RADIANS = "rotation_vector_radians"
+LEGACY_SYNTHETIC_ROTATION_VECTOR = "legacy_synthetic_rotation_vector"
+PROCESSED_METADATA_SCHEMA_VERSION = "processed_jsonl_v1"
+MODEL_STATE_LAYOUT_VERSION = "doosan_model_state_25d_v1"
+MEASURED_ACTION_LAYOUT_VERSION = "measured_tcp_delta_7d_v1"
 WRENCH_SOURCE_FIELDS = ["tcp_wrench", "measured_tcp_wrench", "external_tcp_force", "raw_force_torque"]
+
+
+@dataclass(frozen=True)
+class OrientationPolicy:
+    synthetic: bool
+    source_convention: str
+    source: str
+    legacy_fallback: bool
+    note: str
+
+
+@dataclass(frozen=True)
+class TcpConversionInfo:
+    position_unit: UnitResolution
+    orientation_unit: UnitResolution
+    position_conversion: str
+    orientation_conversion: str
+
+
+@dataclass(frozen=True)
+class GripperMetadata:
+    state_source: str
+    state_value_field: str
+    state_unit: str
+    provenance: str
+    is_placeholder: bool
+    verified: bool
+    valid_for_training: bool
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:
@@ -215,33 +253,56 @@ def _combined_units(record: dict[str, Any], stream_entry: dict[str, Any]) -> dic
     return units
 
 
-def _convert_tcp_position(values: list[float], units: dict[str, Any], synthetic: bool, context: str) -> list[float]:
-    unit = _normalized_unit(units, "tcp_position")
-    if unit is None and synthetic:
-        unit = "mm"
-    if unit in {"mm", "millimeter", "millimeters"}:
-        return [value / 1000.0 for value in values]
-    if unit in {"m", "meter", "meters"}:
-        return values
+def _tcp_position_conversion_name(unit: str) -> str:
+    if unit == "mm":
+        return "millimeters_to_meters_divide_by_1000"
+    if unit == "m":
+        return "preserved_meters"
+    return f"unsupported_tcp_position_unit_{unit}"
+
+
+def _tcp_orientation_conversion_name(unit: str) -> str:
+    if unit == "deg":
+        return "rotation_vector_degrees_to_radians_multiply_by_pi_over_180"
+    if unit == "rad":
+        return "preserved_rotation_vector_radians"
+    return f"unsupported_tcp_orientation_unit_{unit}"
+
+
+def _convert_tcp_position(values: list[float], unit_resolution: UnitResolution, context: str) -> tuple[list[float], str]:
+    if not unit_resolution.ok:
+        raise ValueError("\n".join(unit_resolution.errors) or f"{context}: tcp_position unit could not be resolved")
+    unit = unit_resolution.unit
+    if unit == "mm":
+        return [value / 1000.0 for value in values], _tcp_position_conversion_name(unit)
+    if unit == "m":
+        return values, _tcp_position_conversion_name(unit)
     raise ValueError(f"{context}: unsupported or missing tcp_position unit: {unit!r}")
 
 
 def _convert_tcp_orientation_rotvec(
     values: list[float],
-    units: dict[str, Any],
-    synthetic: bool,
-    default_unit: str | None,
+    unit_resolution: UnitResolution,
+    orientation_policy: OrientationPolicy,
     context: str,
-) -> list[float]:
-    unit = _normalized_unit(units, "tcp_orientation")
-    if unit is None and default_unit is not None:
-        unit = default_unit
-    if unit is None and synthetic:
-        unit = "deg"
-    if unit in {"deg", "degree", "degrees"}:
-        return [math.radians(value) for value in values]
-    if unit in {"rad", "radian", "radians"}:
-        return values
+) -> tuple[list[float], str]:
+    if not unit_resolution.ok:
+        raise ValueError("\n".join(unit_resolution.errors) or f"{context}: tcp_orientation unit could not be resolved")
+    unit = unit_resolution.unit
+    if orientation_policy.source_convention == ROTATION_VECTOR_RADIANS and unit != "rad":
+        raise ValueError(
+            f"{context}: tcp_orientation unit {unit!r} does not match "
+            "tcp_orientation_convention='rotation_vector_radians'"
+        )
+    if orientation_policy.source_convention == ROTATION_VECTOR_DEGREES and unit != "deg":
+        raise ValueError(
+            f"{context}: tcp_orientation unit {unit!r} does not match "
+            "tcp_orientation_convention='rotation_vector_degrees'"
+        )
+    if unit == "deg":
+        return [math.radians(value) for value in values], _tcp_orientation_conversion_name(unit)
+    if unit == "rad":
+        return values, _tcp_orientation_conversion_name(unit)
     raise ValueError(f"{context}: unsupported or missing tcp_orientation unit: {unit!r}")
 
 
@@ -284,15 +345,43 @@ def _orientation_policy(
     metadata: dict[str, Any],
     recorder_report: dict[str, Any],
     streams_index: dict[str, Any],
-) -> tuple[bool, str, str | None]:
-    if is_explicit_synthetic_episode(metadata, recorder_report, streams_index):
-        return True, "synthetic raw-real episode: treating actual_tcp_position[3:6] as rotation vector in degrees", "deg"
+) -> OrientationPolicy:
+    synthetic = is_explicit_synthetic_episode(metadata, recorder_report, streams_index)
+    if metadata.get("tcp_orientation_convention") is not None:
+        convention = metadata.get("tcp_orientation_convention")
+        source = "metadata.json.tcp_orientation_convention"
+    else:
+        convention = recorder_report.get("tcp_orientation_convention")
+        source = "recorder_report.json.tcp_orientation_convention"
 
-    convention = metadata.get("tcp_orientation_convention") or recorder_report.get("tcp_orientation_convention")
     if convention == ROTATION_VECTOR_DEGREES:
-        return False, "tcp_orientation_convention=rotation_vector_degrees", "deg"
+        return OrientationPolicy(
+            synthetic=synthetic,
+            source_convention=ROTATION_VECTOR_DEGREES,
+            source=source,
+            legacy_fallback=False,
+            note="tcp_orientation_convention=rotation_vector_degrees",
+        )
     if convention == ROTATION_VECTOR_RADIANS:
-        return False, "tcp_orientation_convention=rotation_vector_radians", "rad"
+        return OrientationPolicy(
+            synthetic=synthetic,
+            source_convention=ROTATION_VECTOR_RADIANS,
+            source=source,
+            legacy_fallback=False,
+            note="tcp_orientation_convention=rotation_vector_radians",
+        )
+
+    if convention is None and synthetic:
+        return OrientationPolicy(
+            synthetic=True,
+            source_convention=LEGACY_SYNTHETIC_ROTATION_VECTOR,
+            source="legacy synthetic raw_real_v0 compatibility fallback",
+            legacy_fallback=True,
+            note=(
+                "legacy synthetic raw-real compatibility: actual_tcp_position[3:6] is treated as a "
+                "rotation vector; orientation units come from explicit unit metadata or the legacy deg fallback"
+            ),
+        )
 
     error = tcp_orientation_convention_readiness_error(convention)
     if error is None:
@@ -503,27 +592,407 @@ def _prepare_output(raw_root: Path, output_root: Path, overwrite: bool) -> None:
     output_root.mkdir(parents=True, exist_ok=False)
 
 
+def _normalized_label(value: Any) -> str | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _is_placeholder_gripper_metadata(value: Any) -> bool:
+    label = _normalized_label(value)
+    if label is None:
+        return False
+    return "gripper" in label and ("synthetic" in label or "placeholder" in label or "pipeline_smoke" in label)
+
+
+def _gripper_metadata(
+    streams: dict[str, Any],
+    gripper_records: list[dict[str, Any]],
+    synthetic: bool,
+) -> GripperMetadata:
+    entry = streams.get("gripper_state") if isinstance(streams.get("gripper_state"), dict) else None
+    if not gripper_records or entry is None:
+        return GripperMetadata(
+            state_source="synthetic-only fallback; gripper_pos=0.0",
+            state_value_field="fallback_zero",
+            state_unit="unitless_placeholder_scalar",
+            provenance="fallback_default",
+            is_placeholder=True,
+            verified=False,
+            valid_for_training=False,
+        )
+
+    uses_position = any(_is_finite_number(record.get("gripper_position")) for record in gripper_records)
+    uses_width = any(_is_finite_number(record.get("gripper_width_m")) for record in gripper_records)
+    if uses_position:
+        value_field = "gripper_position"
+        value_unit = "source_gripper_position_scalar"
+    elif uses_width:
+        value_field = "gripper_width_m"
+        value_unit = "m"
+    else:
+        value_field = "unsupported"
+        value_unit = "unknown"
+
+    placeholder = bool(entry.get("placeholder") is True or entry.get("synthetic_placeholder") is True)
+    for key in ["source_name", "source_type"]:
+        if _is_placeholder_gripper_metadata(entry.get(key)):
+            placeholder = True
+    for record in gripper_records:
+        if record.get("placeholder") is True or record.get("synthetic_placeholder") is True:
+            placeholder = True
+        for key in ["source_name", "source_type"]:
+            if _is_placeholder_gripper_metadata(record.get(key)):
+                placeholder = True
+
+    verified = entry.get("verified") is True and not placeholder
+    if placeholder:
+        provenance = "synthetic_placeholder"
+        source = "record_index aligned placeholder gripper_state stream"
+    elif synthetic:
+        provenance = "synthetic_fixture_gripper"
+        source = "record_index aligned synthetic gripper_state stream"
+    else:
+        provenance = "real_measured"
+        source = "record_index aligned measured gripper_state stream"
+
+    return GripperMetadata(
+        state_source=source,
+        state_value_field=value_field,
+        state_unit=value_unit,
+        provenance=provenance,
+        is_placeholder=placeholder,
+        verified=verified,
+        valid_for_training=(not synthetic and not placeholder and verified),
+    )
+
+
+def _unique_preserving_order(values: list[Any]) -> list[Any]:
+    unique: list[Any] = []
+    for value in values:
+        if value in unique:
+            continue
+        unique.append(value)
+    return unique
+
+
+def _single_or_list(values: list[Any]) -> Any:
+    unique = _unique_preserving_order(values)
+    if len(unique) == 1:
+        return unique[0]
+    return unique
+
+
+def _unique_unit_metadata(resolutions: list[UnitResolution]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for resolution in resolutions:
+        item = resolution.as_metadata()
+        if item not in items:
+            items.append(item)
+    return items
+
+
+def _tcp_conversion_metadata(
+    infos: list[TcpConversionInfo],
+    orientation_policy: OrientationPolicy,
+) -> dict[str, Any]:
+    position_units = [info.position_unit.unit for info in infos]
+    orientation_units = [info.orientation_unit.unit for info in infos]
+    position_conversions = [info.position_conversion for info in infos]
+    orientation_conversions = [info.orientation_conversion for info in infos]
+    return {
+        "tcp_position_source_unit": _single_or_list(position_units),
+        "tcp_position_source_unit_resolution": _unique_unit_metadata([info.position_unit for info in infos]),
+        "tcp_position_output_unit": "m",
+        "tcp_position_conversion": _single_or_list(position_conversions),
+        "tcp_position_values_preserved": all(conversion == "preserved_meters" for conversion in position_conversions),
+        "tcp_position_values_converted": any(conversion != "preserved_meters" for conversion in position_conversions),
+        "tcp_position_legacy_unit_fallback_used": any(info.position_unit.legacy_fallback for info in infos),
+        "tcp_orientation_source_convention": orientation_policy.source_convention,
+        "tcp_orientation_source_convention_source": orientation_policy.source,
+        "tcp_orientation_source_unit": _single_or_list(orientation_units),
+        "tcp_orientation_source_unit_resolution": _unique_unit_metadata([info.orientation_unit for info in infos]),
+        "tcp_orientation_output_convention": ROTATION_VECTOR_RADIANS,
+        "tcp_orientation_output_unit": "rad",
+        "tcp_orientation_conversion": _single_or_list(orientation_conversions),
+        "tcp_orientation_values_preserved": all(
+            conversion == "preserved_rotation_vector_radians" for conversion in orientation_conversions
+        ),
+        "tcp_orientation_values_converted": any(
+            conversion != "preserved_rotation_vector_radians" for conversion in orientation_conversions
+        ),
+        "tcp_orientation_legacy_unit_fallback_used": any(info.orientation_unit.legacy_fallback for info in infos),
+        "tcp_orientation_convention_legacy_fallback_used": orientation_policy.legacy_fallback,
+        "orientation_conversion": orientation_policy.note,
+    }
+
+
+def _conversion_text(values: list[str]) -> str:
+    return str(_single_or_list(values))
+
+
+def _first_text(*values: Any, default: str = "unspecified") -> str:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return default
+
+
+def _wrench_layout_metadata(
+    wrench_sources: set[str],
+    selected_wrench_metadata: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    source = sorted(wrench_sources)[0] if len(wrench_sources) == 1 else "selected_wrench_source"
+    metadata = selected_wrench_metadata.get(source, {}) if len(wrench_sources) == 1 else {}
+    return {
+        "source": source,
+        "frame": _first_text(metadata.get("frame"), default="declared_by_selected_wrench_source"),
+        "provenance": _first_text(metadata.get("source_type"), default="raw_wrench_signal"),
+        "verified": metadata.get("verified") is True,
+        "approved_for_training": metadata.get("approved_for_training") is True,
+    }
+
+
+def _joint_layout_sources(joint_sources: set[str]) -> tuple[str, str]:
+    if joint_sources == {"robot_state_rt.actual_joint_position; robot_state_rt.actual_joint_velocity"}:
+        return "robot_state_rt.actual_joint_position", "robot_state_rt.actual_joint_velocity"
+    if joint_sources == {"joint_states.position; joint_states.velocity"}:
+        return "joint_states.position", "joint_states.velocity"
+    return "mixed_joint_position_sources", "mixed_joint_velocity_sources"
+
+
+def _build_model_state_layout(
+    *,
+    tcp_frame: str,
+    tcp_position_conversion: str,
+    tcp_orientation_conversion: str,
+    gripper: GripperMetadata,
+    wrench_sources: set[str],
+    selected_wrench_metadata: dict[str, dict[str, Any]],
+    joint_sources: set[str],
+) -> list[dict[str, Any]]:
+    layout: list[dict[str, Any]] = []
+    for idx, axis in enumerate(["x", "y", "z"]):
+        layout.append(
+            {
+                "index": idx,
+                "name": f"tcp_{axis}_m",
+                "source": f"robot_state_rt.actual_tcp_position[{idx}]",
+                "unit": "m",
+                "frame": tcp_frame,
+                "order": "xyz",
+                "conversion": tcp_position_conversion,
+                "provenance": "raw_robot_state_rt",
+                "value_kind": "real_or_synthetic_source_measurement",
+            }
+        )
+    for offset, axis in enumerate(["x", "y", "z"], start=3):
+        layout.append(
+            {
+                "index": offset,
+                "name": f"tcp_rotvec_{axis}_rad",
+                "source": f"robot_state_rt.actual_tcp_position[{offset}]",
+                "unit": "rad",
+                "frame": tcp_frame,
+                "order": "rotation_vector_xyz",
+                "conversion": tcp_orientation_conversion,
+                "provenance": "raw_robot_state_rt",
+                "value_kind": "rotation_vector_radians",
+            }
+        )
+    layout.append(
+        {
+            "index": 6,
+            "name": "gripper_position",
+            "source": gripper.state_value_field,
+            "unit": gripper.state_unit,
+            "frame": "gripper",
+            "order": "scalar",
+            "conversion": "preserved" if gripper.state_value_field != "fallback_zero" else "fallback_zero",
+            "provenance": gripper.provenance,
+            "value_kind": "placeholder" if gripper.is_placeholder else "real",
+        }
+    )
+    wrench = _wrench_layout_metadata(wrench_sources, selected_wrench_metadata)
+    for idx, name in enumerate(
+        [
+            "tcp_force_x_n",
+            "tcp_force_y_n",
+            "tcp_force_z_n",
+            "tcp_torque_x_nm",
+            "tcp_torque_y_nm",
+            "tcp_torque_z_nm",
+        ],
+        start=7,
+    ):
+        source_index = idx - 7
+        unit = "N" if source_index < 3 else "Nm"
+        layout.append(
+            {
+                "index": idx,
+                "name": name,
+                "source": f"robot_state_rt.{wrench['source']}[{source_index}]",
+                "unit": unit,
+                "frame": wrench["frame"],
+                "order": "Fx,Fy,Fz,Tx,Ty,Tz",
+                "conversion": "preserved",
+                "provenance": wrench["provenance"],
+                "value_kind": "unverified" if not wrench["verified"] else "declared_verified",
+            }
+        )
+    joint_pos_source, joint_vel_source = _joint_layout_sources(joint_sources)
+    for joint_idx in range(6):
+        layout.append(
+            {
+                "index": 13 + joint_idx,
+                "name": f"joint_{joint_idx + 1}_position_rad",
+                "source": f"{joint_pos_source}[{joint_idx}]",
+                "unit": "rad",
+                "frame": "joint_space",
+                "order": "joint_1_to_joint_6",
+                "conversion": "raw_joint_position_units_to_radians",
+                "provenance": "raw_robot_or_joint_state",
+                "value_kind": "real_or_synthetic_source_measurement",
+            }
+        )
+    for joint_idx in range(6):
+        layout.append(
+            {
+                "index": 19 + joint_idx,
+                "name": f"joint_{joint_idx + 1}_velocity_rad_s",
+                "source": f"{joint_vel_source}[{joint_idx}]",
+                "unit": "rad/s",
+                "frame": "joint_space",
+                "order": "joint_1_to_joint_6",
+                "conversion": "raw_joint_velocity_units_to_radians_per_second",
+                "provenance": "raw_robot_or_joint_state",
+                "value_kind": "real_or_synthetic_source_measurement",
+            }
+        )
+    return layout
+
+
+def _build_measured_action_layout(gripper: GripperMetadata) -> list[dict[str, Any]]:
+    layout: list[dict[str, Any]] = []
+    for idx, axis in enumerate(["x", "y", "z"]):
+        layout.append(
+            {
+                "index": idx,
+                "name": f"delta_tcp_{axis}_m",
+                "source": f"processed tcp position[t+1].{axis} - processed tcp position[t].{axis}",
+                "unit": "m",
+                "frame": "base",
+                "delta_convention": "next_minus_current",
+                "absolute_or_relative": "relative_delta",
+                "rotation_composition_order": "not_applicable",
+            }
+        )
+    for idx, axis in enumerate(["x", "y", "z"], start=3):
+        layout.append(
+            {
+                "index": idx,
+                "name": f"delta_tcp_rotvec_{axis}_rad",
+                "source": "rotvec(conjugate(tcp_quat_xyzw[t]) * tcp_quat_xyzw[t+1])",
+                "unit": "rad",
+                "frame": "tcp_t_relative_rotation",
+                "delta_convention": "relative_rotation_log_map",
+                "absolute_or_relative": "relative_delta",
+                "rotation_composition_order": "q_rel = conjugate(q_t) * q_t1; xyzw quaternions",
+            }
+        )
+    layout.append(
+        {
+            "index": 6,
+            "name": "gripper_action",
+            "source": f"{gripper.state_value_field}[t+1] - {gripper.state_value_field}[t]",
+            "unit": gripper.state_unit,
+            "frame": "gripper",
+            "delta_convention": "next_minus_current",
+            "absolute_or_relative": "relative_delta",
+            "rotation_composition_order": "not_applicable",
+        }
+    )
+    return layout
+
+
+def _terminal_action_policy(frame_count: int) -> dict[str, Any]:
+    return {
+        "final_observation_retained": True,
+        "final_action_padded": True,
+        "padding_value": [0.0] * ACTION_DIM,
+        "padding_count": 1,
+        "terminal_padding_frame_indices": [frame_count - 1],
+        "exporters_must_exclude_terminal_padding_rows": True,
+        "terminal_padding_rows_valid_for_observation_only_visualization": True,
+    }
+
+
+def _source_stream_verification(streams: dict[str, Any]) -> dict[str, Any]:
+    verification: dict[str, Any] = {}
+    for stream_name, entry in streams.items():
+        if not isinstance(entry, dict):
+            continue
+        verification[stream_name] = {
+            "verified": entry.get("verified") is True,
+            "source_name": entry.get("source_name"),
+            "source_type": entry.get("source_type"),
+        }
+    return verification
+
+
+def _semantic_verification_pending(gripper: GripperMetadata, selected_wrench_metadata: dict[str, dict[str, Any]]) -> list[str]:
+    pending: list[str] = []
+    if gripper.is_placeholder or not gripper.valid_for_training:
+        pending.append("gripper_state_not_validated_for_real_training")
+    for source, metadata in selected_wrench_metadata.items():
+        if metadata.get("verified") is not True or metadata.get("approved_for_training") is not True:
+            pending.append(f"wrench_source_{source}_training_semantics_unverified")
+    return pending
+
+
 def _build_model_state(
     *,
     robot_record: dict[str, Any],
     robot_entry: dict[str, Any],
+    metadata: dict[str, Any],
+    streams_index: dict[str, Any],
     joint_record: dict[str, Any],
     joint_entry: dict[str, Any],
     gripper_record: dict[str, Any] | None,
     synthetic: bool,
-    orientation_unit_default: str | None,
+    orientation_policy: OrientationPolicy,
     frame_index: int,
-) -> tuple[list[float], list[float], list[float], float, str, str]:
+) -> tuple[list[float], list[float], list[float], float, str, str, TcpConversionInfo]:
     tcp = _finite_vector(
         robot_record.get("actual_tcp_position"), 6, f"robot_state_rt record {frame_index} actual_tcp_position"
     )
-    robot_units = _combined_units(robot_record, robot_entry)
-    ee_pos = _convert_tcp_position(tcp[:3], robot_units, synthetic, f"robot_state_rt record {frame_index}")
-    ee_axis_angle = _convert_tcp_orientation_rotvec(
+    position_unit = resolve_tcp_position_unit(
+        record=robot_record,
+        record_source=f"robot_state_rt record {frame_index}",
+        stream_entry=robot_entry,
+        stream_source="streams/index.json streams.robot_state_rt",
+        metadata=metadata,
+        streams_index=streams_index,
+        synthetic=synthetic,
+        context=f"robot_state_rt record {frame_index} actual_tcp_position[0:3]",
+    )
+    orientation_unit = resolve_tcp_orientation_unit(
+        record=robot_record,
+        record_source=f"robot_state_rt record {frame_index}",
+        stream_entry=robot_entry,
+        stream_source="streams/index.json streams.robot_state_rt",
+        metadata=metadata,
+        streams_index=streams_index,
+        synthetic=synthetic,
+        context=f"robot_state_rt record {frame_index} actual_tcp_position[3:6]",
+    )
+    ee_pos, position_conversion = _convert_tcp_position(
+        tcp[:3], position_unit, f"robot_state_rt record {frame_index} actual_tcp_position[0:3]"
+    )
+    ee_axis_angle, orientation_conversion = _convert_tcp_orientation_rotvec(
         tcp[3:6],
-        robot_units,
-        synthetic,
-        orientation_unit_default,
+        orientation_unit,
+        orientation_policy,
         f"robot_state_rt record {frame_index} actual_tcp_position[3:6]",
     )
     ee_quat = _rotvec_to_quat_xyzw(ee_axis_angle)
@@ -538,7 +1007,20 @@ def _build_model_state(
         raise ValueError(f"model_state length must be {MODEL_STATE_DIM}, got {len(model_state)}")
     if not all(math.isfinite(value) for value in model_state):
         raise ValueError(f"frame {frame_index}: model_state contains a non-finite value")
-    return model_state, ee_pos, ee_quat, gripper_pos, wrench_source, joint_source
+    return (
+        model_state,
+        ee_pos,
+        ee_quat,
+        gripper_pos,
+        wrench_source,
+        joint_source,
+        TcpConversionInfo(
+            position_unit=position_unit,
+            orientation_unit=orientation_unit,
+            position_conversion=position_conversion,
+            orientation_conversion=orientation_conversion,
+        ),
+    )
 
 
 def convert_raw_real_to_processed(
@@ -572,7 +1054,8 @@ def convert_raw_real_to_processed(
     if not isinstance(streams, dict):
         raise ValueError(f"{raw_root / 'streams' / 'index.json'}: streams must be a JSON object")
 
-    synthetic, orientation_note, orientation_unit_default = _orientation_policy(metadata, recorder_report, streams_index)
+    orientation_policy = _orientation_policy(metadata, recorder_report, streams_index)
+    synthetic = orientation_policy.synthetic
 
     robot_records = _read_jsonl_objects(_stream_path(raw_root, streams, "robot_state_rt"))
     if not robot_records:
@@ -664,23 +1147,27 @@ def convert_raw_real_to_processed(
     frames: list[dict[str, Any]] = []
     tcp_positions: list[list[float]] = []
     tcp_quats: list[list[float]] = []
+    tcp_conversion_infos: list[TcpConversionInfo] = []
     gripper_positions: list[float] = []
     wrench_sources: set[str] = set()
     joint_sources: set[str] = set()
 
     for frame_index, record_index in enumerate(ordered_indexes):
-        model_state, tcp_pos, tcp_quat, gripper_pos, wrench_source, joint_source = _build_model_state(
+        model_state, tcp_pos, tcp_quat, gripper_pos, wrench_source, joint_source, conversion_info = _build_model_state(
             robot_record=robot_by_index[record_index],
             robot_entry=robot_entry,
+            metadata=metadata,
+            streams_index=streams_index,
             joint_record=joint_by_index[record_index],
             joint_entry=joint_entry,
             gripper_record=gripper_by_index.get(record_index),
             synthetic=synthetic,
-            orientation_unit_default=orientation_unit_default,
+            orientation_policy=orientation_policy,
             frame_index=frame_index,
         )
         tcp_positions.append(tcp_pos)
         tcp_quats.append(tcp_quat)
+        tcp_conversion_infos.append(conversion_info)
         gripper_positions.append(gripper_pos)
         wrench_sources.add(wrench_source)
         joint_sources.add(joint_source)
@@ -726,15 +1213,56 @@ def convert_raw_real_to_processed(
         )
         frame["action_is_terminal_padding"] = False
 
+    gripper_metadata = _gripper_metadata(streams, gripper_records, synthetic)
+    tcp_conversion_metadata = _tcp_conversion_metadata(tcp_conversion_infos, orientation_policy)
+    tcp_position_conversion_text = _conversion_text([info.position_conversion for info in tcp_conversion_infos])
+    tcp_orientation_conversion_text = _conversion_text([info.orientation_conversion for info in tcp_conversion_infos])
+    tcp_frame = _first_text(robot_entry.get("frame_id"), ordered_robot_records[0].get("frame_id"), default="unspecified")
+    model_state_layout = _build_model_state_layout(
+        tcp_frame=tcp_frame,
+        tcp_position_conversion=tcp_position_conversion_text,
+        tcp_orientation_conversion=tcp_orientation_conversion_text,
+        gripper=gripper_metadata,
+        wrench_sources=wrench_sources,
+        selected_wrench_metadata=selected_wrench_metadata,
+        joint_sources=joint_sources,
+    )
+    measured_action_layout = _build_measured_action_layout(gripper_metadata)
+    terminal_policy = _terminal_action_policy(len(frames))
+    placeholder_fields = []
+    if gripper_metadata.is_placeholder:
+        placeholder_fields.extend(["model_state[6].gripper_position", "measured_action[6].gripper_action"])
+
     processed_metadata: dict[str, Any] = {
         "source_raw_episode": str(raw_root.resolve()),
+        "processed_metadata_schema_version": PROCESSED_METADATA_SCHEMA_VERSION,
         "dataset_name": DATASET_NAME,
         "robot_type": metadata.get("robot_type"),
         "fps": metadata.get("fps"),
         "quaternion_convention": QUATERNION_CONVENTION,
         "model_state_dim": MODEL_STATE_DIM,
+        "model_state_layout_version": MODEL_STATE_LAYOUT_VERSION,
+        "model_state_layout_semantics": (
+            "tcp position meters, tcp orientation rotation-vector radians, gripper scalar, "
+            "TCP wrench, joint positions radians, joint velocities radians_per_second"
+        ),
+        "model_state_layout": model_state_layout,
         "action_dim": ACTION_DIM,
         "action_label_primary": "measured_tcp_delta",
+        "measured_action_layout_version": MEASURED_ACTION_LAYOUT_VERSION,
+        "measured_action_layout": measured_action_layout,
+        "measured_action_semantics": (
+            "measured consecutive TCP delta from frame t to frame t+1; final frame retains observation "
+            "and uses terminal zero padding because no t+1 pose exists"
+        ),
+        "translation_delta_frame": "base",
+        "rotation_delta_convention": "relative rotation vector from normalized xyzw quaternions",
+        "rotation_composition_order": "q_rel = conjugate(q_t) * q_t1; delta_rotvec = log(q_rel)",
+        "gripper_action_semantics": (
+            "gripper scalar delta gripper[t+1] - gripper[t] using the same scalar stored at model_state[6]; "
+            "terminal padding uses 0.0"
+        ),
+        "terminal_action_policy": terminal_policy,
         "frame_count": len(frames),
         "task_instruction": metadata.get("task_instruction"),
         "geometry_type": metadata.get("geometry_type"),
@@ -748,6 +1276,15 @@ def convert_raw_real_to_processed(
         ),
         "source_schema_version": metadata.get("schema_version"),
         "source_episode_id": metadata.get("episode_id"),
+        "source_collection_method": metadata.get("collection_method"),
+        "source_real_hardware_recording": metadata.get("real_hardware_recording"),
+        "source_training_ready": metadata.get("training_ready"),
+        "source_real_hardware_verified": metadata.get("real_hardware_verified"),
+        "source_stream_verification": _source_stream_verification(streams),
+        "placeholder_fields": placeholder_fields,
+        "semantic_verification_pending": _semantic_verification_pending(gripper_metadata, selected_wrench_metadata),
+        "conversion_structurally_valid": True,
+        "training_readiness_is_separate_from_structural_validity": True,
         "converter_version": CONVERTER_VERSION,
         "alignment_policy": "record_index equality against robot_state_rt primary timeline",
         "selected_streams": {
@@ -755,24 +1292,27 @@ def convert_raw_real_to_processed(
             "joint_states": "record_index aligned fallback only when robot_state_rt joint vectors are unavailable",
             "external_rgb_path": f"{external_camera_stream}.image_path",
             "tcp_rgb_path": f"{tcp_camera_stream}.image_path",
-            "gripper_state": (
-                "record_index aligned measured gripper_state stream"
-                if gripper_by_index
-                else "synthetic-only fallback; gripper_pos=0.0"
-            ),
+            "gripper_state": gripper_metadata.state_source,
         },
         "camera_mapping": _processed_camera_mapping(selected_camera_streams, camera_selection_sources),
         "raw_camera_streams": _camera_stream_metadata(streams, declared_camera_streams),
         "unit_conversions": {
-            "tcp_position": "raw units to meters",
-            "tcp_orientation": "rotation vector units to radians",
+            "tcp_position": tcp_position_conversion_text,
+            "tcp_orientation": tcp_orientation_conversion_text,
             "joint_position": "raw units to radians",
             "joint_velocity": "raw units to radians_per_second",
             "wrench": "preserved from selected raw 6D force/torque signal",
         },
+        **tcp_conversion_metadata,
         "wrench_source": sorted(wrench_sources),
         "joint_source": sorted(joint_sources),
-        "orientation_conversion": orientation_note,
+        "gripper_state_source": gripper_metadata.state_source,
+        "gripper_state_value_field": gripper_metadata.state_value_field,
+        "gripper_state_unit": gripper_metadata.state_unit,
+        "gripper_state_provenance": gripper_metadata.provenance,
+        "gripper_state_is_placeholder": gripper_metadata.is_placeholder,
+        "gripper_state_verified": gripper_metadata.verified,
+        "gripper_state_valid_for_training": gripper_metadata.valid_for_training,
         "image_copy_policy": "copied into processed images/" if copy_images else "raw-real relative image paths",
         "raw_validation_warnings": validation.warnings,
         "command_context_policy": "diagnostic only; never used as action label",

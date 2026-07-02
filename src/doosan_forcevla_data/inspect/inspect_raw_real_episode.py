@@ -418,9 +418,9 @@ def _normalized_unit(units: dict[str, Any], key: str) -> str | None:
 def _tcp_position_units_guess(records: list[dict[str, Any]], entry: dict[str, Any] | None) -> str:
     units = _combined_units(records[0] if records else None, entry)
     unit = _normalized_unit(units, "tcp_position")
-    if unit in {"mm", "millimeter", "millimeters"}:
+    if unit in {"mm", "millimeter", "millimeters", "millimetre", "millimetres"}:
         return "mm"
-    if unit in {"m", "meter", "meters"}:
+    if unit in {"m", "meter", "meters", "metre", "metres"}:
         return "m"
     if records and _finite_vector(records[0].get("actual_tcp_position"), 6):
         values = [abs(float(value)) for value in records[0]["actual_tcp_position"][:3]]
@@ -436,8 +436,6 @@ def _orientation_guard(
     recorder_report: dict[str, Any] | None,
     streams_index: dict[str, Any] | None,
 ) -> tuple[str, bool]:
-    if is_explicit_synthetic_episode(metadata, recorder_report, streams_index):
-        return "synthetic episode: converter uses guarded synthetic rotation-vector-degrees policy", True
     metadata = metadata if isinstance(metadata, dict) else {}
     recorder_report = recorder_report if isinstance(recorder_report, dict) else {}
     convention = metadata.get("tcp_orientation_convention") or recorder_report.get("tcp_orientation_convention")
@@ -445,6 +443,8 @@ def _orientation_guard(
         return "tcp_orientation_convention=rotation_vector_degrees", True
     if convention == ROTATION_VECTOR_RADIANS:
         return "tcp_orientation_convention=rotation_vector_radians", True
+    if is_explicit_synthetic_episode(metadata, recorder_report, streams_index):
+        return "synthetic episode: converter uses legacy synthetic rotation-vector compatibility policy", True
     error = tcp_orientation_convention_readiness_error(convention)
     if error is None:
         return "tcp_orientation_convention is ready for conversion", True

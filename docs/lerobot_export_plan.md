@@ -13,6 +13,8 @@ The current processed episode directory contains:
 
 `frames.jsonl` stores one JSON object per frame with image references, timestamp, `model_state`, `measured_action`, and `action_is_terminal_padding`.
 
+The raw-real conversion path now writes machine-verifiable `model_state_layout`, `measured_action_layout`, TCP conversion, terminal-padding, gripper provenance, and wrench provenance metadata. See `docs/raw_real_processed_semantics.md` for the explicit Phase 1 contract.
+
 `model_state` is 25D:
 
 ```text

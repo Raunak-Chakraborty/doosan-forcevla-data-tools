@@ -21,6 +21,14 @@ from doosan_forcevla_data.schema.raw_real_schema import (
     REQUIRED_STREAM_NAMES,
     REQUIRED_TOP_LEVEL_FILES,
 )
+from doosan_forcevla_data.schema.raw_real_units import (
+    MILLIMETER_UNITS,
+    METER_UNITS,
+    RADIAN_UNITS,
+    DEGREE_UNITS,
+    resolve_tcp_orientation_unit,
+    resolve_tcp_position_unit,
+)
 
 
 @dataclass(frozen=True)
@@ -143,8 +151,8 @@ UNKNOWN_PROVENANCE_MARKERS = {
     "na",
 }
 
-SUPPORTED_TCP_POSITION_UNITS = {"mm", "millimeter", "millimeters", "m", "meter", "meters"}
-SUPPORTED_TCP_ORIENTATION_UNITS = {"deg", "degree", "degrees", "rad", "radian", "radians"}
+SUPPORTED_TCP_POSITION_UNITS = MILLIMETER_UNITS | METER_UNITS
+SUPPORTED_TCP_ORIENTATION_UNITS = DEGREE_UNITS | RADIAN_UNITS
 SUPPORTED_JOINT_POSITION_UNITS = {"deg", "degree", "degrees", "rad", "radian", "radians"}
 SUPPORTED_JOINT_VELOCITY_UNITS = {
     "deg/s",
@@ -158,8 +166,6 @@ SUPPORTED_JOINT_VELOCITY_UNITS = {
     "radians/s",
     "radians_per_second",
 }
-DEGREE_UNITS = {"deg", "degree", "degrees"}
-RADIAN_UNITS = {"rad", "radian", "radians"}
 
 CALIBRATION_REF_ID_KEYS = ("id", "calibration_id", "reference_id", "ref", "reference", "name")
 REQUIRED_NON_CAMERA_CALIBRATION_REF_PATHS = [
@@ -837,6 +843,8 @@ def _validated_wrench_metadata(source: str, metadata: dict[str, Any], errors: li
         "frame": frame,
         "compensation": compensation,
         "approved_for_model_state": True,
+        "verified": metadata.get("verified") is True,
+        "approved_for_training": metadata.get("approved_for_training") is True,
     }
     for optional_key in ["source_name", "source_type", "source_service_or_topic"]:
         value = metadata.get(optional_key)
@@ -1746,26 +1754,32 @@ def raw_real_conversion_readiness_errors(
         context = f"robot_state_rt record {idx}"
         robot_units = _combined_units(robot_record, robot_entry)
 
-        tcp_position_error = _supported_unit_error(
-            robot_units,
-            "tcp_position",
-            SUPPORTED_TCP_POSITION_UNITS,
-            f"{context} actual_tcp_position",
+        tcp_position_resolution = resolve_tcp_position_unit(
+            record=robot_record,
+            record_source=context,
+            stream_entry=robot_entry,
+            stream_source="streams/index.json streams.robot_state_rt",
+            metadata=metadata,
+            streams_index=streams_index,
+            synthetic=False,
+            context=f"{context} actual_tcp_position",
         )
-        if tcp_position_error is not None:
-            errors.append(tcp_position_error)
+        errors.extend(tcp_position_resolution.errors)
 
-        tcp_orientation_error = _supported_unit_error(
-            robot_units,
-            "tcp_orientation",
-            SUPPORTED_TCP_ORIENTATION_UNITS,
-            f"{context} actual_tcp_position[3:6]",
+        tcp_orientation_resolution = resolve_tcp_orientation_unit(
+            record=robot_record,
+            record_source=context,
+            stream_entry=robot_entry,
+            stream_source="streams/index.json streams.robot_state_rt",
+            metadata=metadata,
+            streams_index=streams_index,
+            synthetic=False,
+            context=f"{context} actual_tcp_position[3:6]",
         )
-        if tcp_orientation_error is not None:
-            errors.append(tcp_orientation_error)
-        else:
+        errors.extend(tcp_orientation_resolution.errors)
+        if not tcp_orientation_resolution.errors:
             mismatch_error = _orientation_unit_matches_convention(
-                _normalized_unit(robot_units, "tcp_orientation"),
+                tcp_orientation_resolution.unit,
                 convention,
                 f"{context} actual_tcp_position[3:6]",
             )

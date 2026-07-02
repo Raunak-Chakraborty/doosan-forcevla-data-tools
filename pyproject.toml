@@ -10,5 +10,8 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
 
+[project.optional-dependencies]
+lerobot-v21 = ["pyarrow>=24.0.0"]
+
 [tool.setuptools.packages.find]
 where = ["src"]

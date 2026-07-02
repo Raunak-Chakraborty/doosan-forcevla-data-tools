@@ -8,5 +8,8 @@ data/processed_dummy/
 data/staged_dummy/
 data/lerobot_dummy/
 data/real_lerobot_dummy/
+local_artifacts/
+.venv-exporter/
+opencode_new22.txt
 *.egg-info/
 .pytest_cache/

@@ -56,6 +56,8 @@ This repository currently provides:
 - a dependency preflight CLI for future real parquet/video export
 - a real-export preflight CLI that checks skeleton schema, image staging, prompt/task compatibility, and dependency readiness
 - a dependency-optional local real-export writer scaffold with dry-run and write-if-available modes
+- a direct processed three-camera to ForceVLA-compatible LeRobot v2.1 Parquet/MP4 exporter
+- a strict LeRobot v2.1 validator, inspector, and dependency doctor
 - standard-library `unittest` tests
 
 ## Current Pipeline Status
@@ -191,6 +193,17 @@ In `dry-run` mode, no metadata, parquet, videos, or images are copied. In `write
 
 The first real writer design is documented in `docs/real_lerobot_writer_design.md`. The concrete schema decision before real parquet/video work is documented in `docs/real_lerobot_schema_decision.md`. The first target remains `forcevla_13d`, with `doosan_full_25d` kept as a secondary full-proprioception target.
 
+## Direct LeRobot v2.1 Export
+
+The direct exporter is documented in `docs/direct_lerobot_v21_export.md`. It writes ForceVLA-compatible LeRobot v2.1 Parquet and three MP4 camera videos directly from processed three-camera JSONL episodes, using lazy `pyarrow` plus system `ffmpeg`/`ffprobe` only.
+
+```bash
+PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.lerobot_v21_doctor
+PYTHONPATH=src python3 -m doosan_forcevla_data.convert.processed_to_lerobot_v21 --processed data/processed_dummy/episode_000000 --output local_artifacts/lerobot_v21_dummy/doosan_peg_in_hole_v0 --task "Perform a no-contact teleoperation heartbeat check."
+PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_lerobot_v21 local_artifacts/lerobot_v21_dummy/doosan_peg_in_hole_v0
+PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.inspect_lerobot_v21 local_artifacts/lerobot_v21_dummy/doosan_peg_in_hole_v0
+```
+
 ## Lab Workstation Validation
 
 See `docs/lab_workstation_validation_checklist.md` for the lab workstation validation workflow using the validated ForceVLA environment.
@@ -209,6 +222,7 @@ See `docs/lab_workstation_validation_checklist.md` for the lab workstation valid
 - The LeRobot skeleton writer creates v2.1-style folders, JSONL placeholder records, and staged images only; it still does not write parquet or encode videos.
 - The real-export preflight checks readiness only; it does not write parquet or videos.
 - The local real-export writer scaffold is dependency-optional; it may skip parquet or videos and report why.
+- The direct LeRobot v2.1 exporter requires `pyarrow`, `ffmpeg`, and `ffprobe`; it does not import ForceVLA or LeRobot.
 - Laptop dependency availability is informative only; real ForceVLA loader and training compatibility must be checked on the lab workstation.
 
 ## Example Commands

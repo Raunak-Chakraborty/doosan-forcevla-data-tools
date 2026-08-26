@@ -139,8 +139,9 @@ performed by Patch 2.
 Joy requires six finite axes and exactly two buttons. It preserves both bag and
 header timestamps.
 
-SpeedL and Joy remain auxiliary/controller-intent diagnostics. Patch 7 decides
-measured action construction.
+SpeedL and Joy remain auxiliary/controller-intent diagnostics. Patch 7 freezes
+measured action construction from consecutive synchronized measured states; they
+do not become the primary learning label.
 
 ## SCHUNK state
 

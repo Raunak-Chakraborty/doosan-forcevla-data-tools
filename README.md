@@ -20,13 +20,21 @@ action[t] = TCP pose delta from robot state at t to robot state at t + 1
 
 This is the safest v0 label because it exists for hand-guided demonstrations and teleoperated demonstrations alike. It is computed from measured robot state, not from a specific input device or controller API.
 
-The v0 action layout is:
+The original dummy/legacy v0 helper retains its historical layout and is not
+the production Doosan-v2 semantic layer.
+
+For the thesis production contract, Patch 7 freezes:
 
 ```text
-dx, dy, dz, dRx, dRy, dRz, gripper_delta_or_zero
+dx, dy, dz, dRx, dRy, dRz, absolute_gripper_target
 ```
 
-Rotations use the relative quaternion convention `q_rel = conjugate(q_t) * q_t1`, then convert `q_rel` to a rotation vector. Quaternions are stored as `xyzw`.
+where translation is `p[t+1] - p[t]` in robot-base coordinates and rotation is
+the spatial/base-frame relation `Log(R[t+1] @ R[t].T)`. The gripper channel is
+the Patch-6 absolute binary target at `t+1`, never a gripper delta. A sequence
+of `N` synchronized states emits `N-1` measured actions; no synthetic terminal
+zero action is part of the Patch-7 production label. See
+`docs/doosan_measured_action_semantics_v1.md`.
 
 ## Optional Action Streams
 

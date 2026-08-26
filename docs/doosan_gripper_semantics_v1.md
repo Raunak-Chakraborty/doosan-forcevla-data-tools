@@ -56,9 +56,9 @@ Patch 6 defines deterministic execution intent for the physical protocol:
 - released `1 -> 0`: unsupported and rejected because it would require a new
   grasp operation that is outside this thesis episode contract
 
-Patch 7 owns construction of the complete measured 7D action sequence. It will
-use this binary absolute target as action channel `6`; it must not convert that
-channel to a delta.
+Patch 7 constructs the complete measured 7D action sequence and uses the
+**target state's** binary absolute open fraction as action channel `6`. It does
+not convert that channel to a delta. See `docs/doosan_measured_action_semantics_v1.md`.
 
 ## Synchronization
 

@@ -153,8 +153,9 @@ The decoder preserves:
 
 Only finiteness is enforced here.
 
-Patch 6 owns physical fixed-limit normalization, the 0-closed/1-open convention,
-and inference command inversion.
+Patch 6 specializes the thesis release-only protocol to the two frozen semantic
+endpoints using `holding`: `0=held/closed`, `1=released/open`. Raw position is
+retained as diagnostic provenance; it is not normalized into the model state.
 
 ## Images
 
@@ -211,7 +212,7 @@ Patch 2's raw training-candidate whitelist is intentionally narrow:
 - RobotStateRt external TCP wrench
 - JointState position
 - JointState velocity
-- SCHUNK raw position
+- SCHUNK raw position (typed diagnostic candidate; Patch 6 does not use it as a model feature)
 
 JointState effort is deliberately absent from this whitelist.
 

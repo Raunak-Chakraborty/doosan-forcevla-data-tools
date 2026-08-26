@@ -106,10 +106,11 @@ Patch 5 defines the authoritative 25D production layout:
 5. indices `13..18`: joint velocities J1..J6, rad/s
 6. indices `19..24`: external TCP wrench `[Fx,Fy,Fz,Tx,Ty,Tz]`, base, N/Nm
 
-Patch 5 does **not** derive index 6. Patch 6 owns the fixed physical SCHUNK
-normalization with `0=closed, 1=open`. The Patch-5 state object can assemble the
-exact 25D vector only when a caller supplies that already-normalized measured
-value.
+Patch 5 does **not** derive index 6. Patch 6 owns the release-only SCHUNK
+semantic endpoint: `holding=true -> 0=held/closed` and
+`holding=false -> 1=released/open`. Raw finger position remains diagnostic and
+is not normalized. The Patch-5 state object assembles the exact 25D vector after
+Patch 6 supplies that binary open-fraction value.
 
 This intentionally does not mutate the older raw-real converter's historical
 state ordering. Production MCAP integration into the processed/LeRobot path is

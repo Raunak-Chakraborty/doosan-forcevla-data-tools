@@ -201,7 +201,10 @@ In `dry-run` mode, no metadata, parquet, videos, or images are copied. In `write
 
 The first real writer design is documented in `docs/real_lerobot_writer_design.md`. The concrete schema decision before real parquet/video work is documented in `docs/real_lerobot_schema_decision.md`. The first target remains `forcevla_13d`, with `doosan_full_25d` kept as a secondary full-proprioception target.
 
-## Direct LeRobot v2.1 Export
+## Legacy Direct LeRobot v2.1 Export
+
+This section documents the historical three-camera/raw-real regression path.
+For real Doosan MCAP training data use the production Patch-8 path below.
 
 The direct exporter is documented in `docs/direct_lerobot_v21_export.md`. It writes ForceVLA-compatible LeRobot v2.1 Parquet and three MP4 camera videos directly from processed three-camera JSONL episodes, using lazy `pyarrow` plus system `ffmpeg`/`ffprobe` only.
 
@@ -211,6 +214,34 @@ PYTHONPATH=src python3 -m doosan_forcevla_data.convert.processed_to_lerobot_v21 
 PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_lerobot_v21 local_artifacts/lerobot_v21_dummy/doosan_peg_in_hole_v0
 PYTHONPATH=src python3 -m doosan_forcevla_data.inspect.inspect_lerobot_v21 local_artifacts/lerobot_v21_dummy/doosan_peg_in_hole_v0
 ```
+
+## Production Doosan Patch-8 Processed + LeRobot v2.1 Path
+
+The production real-MCAP path is documented in `docs/doosan_processed_export_v1.md`.
+It is separate from the historical dummy/raw-real three-camera exporters above.
+
+Production semantics are: 25D Patch-5/6 state, 7D Patch-7 measured action,
+exactly two native-resolution physical cameras (`tcp_camera` 640x480 and
+`external_camera_2` 848x480), and no fabricated terminal action.  The terminal
+synchronized observation without a measured successor is excluded from the
+action-bearing dataset rows.
+
+Build the compact production processed episode in the ROS/Jazzy environment:
+
+```bash
+PYTHONPATH=src /usr/bin/python3 -m doosan_forcevla_data.convert.doosan_processed_episode_v1 RAW_EPISODE PROCESSED_EPISODE --overwrite
+PYTHONPATH=src /usr/bin/python3 -m doosan_forcevla_data.validate.validate_doosan_processed_episode_v1 PROCESSED_EPISODE
+```
+
+Export it with the frozen ForceVLA Python environment, then validate it:
+
+```bash
+PYTHONPATH=src:$FORCEVLA/src:$FORCEVLA/lerobot:$FORCEVLA/dlimp $FORCEVLA_PY -m doosan_forcevla_data.convert.doosan_processed_to_lerobot_v21 PROCESSED_EPISODE LEROBOT_DATASET --overwrite
+PYTHONPATH=src:$FORCEVLA/src:$FORCEVLA/lerobot:$FORCEVLA/dlimp $FORCEVLA_PY -m doosan_forcevla_data.validate.validate_doosan_lerobot_v21 LEROBOT_DATASET
+```
+
+The old `processed_to_lerobot_v21.py` direct three-camera exporter remains only
+as a legacy regression path; it is not the production Doosan ForceVLA contract.
 
 ## Lab Workstation Validation
 

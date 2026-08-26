@@ -24,6 +24,7 @@ class ClockDomain(str, Enum):
 
     BAG = "bag"
     HEADER = "header"
+    ROS = "ros"
     CONTROLLER = "controller"
 
 

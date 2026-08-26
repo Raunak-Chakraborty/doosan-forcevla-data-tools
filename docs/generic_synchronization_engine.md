@@ -21,12 +21,17 @@ frame-completeness plan.
 
 ## Explicit clock domains
 
-Every timeline carries one `ClockDomain`: `bag`, `header`, or `controller`.
-Synchronization across different domains is rejected. The engine never falls
-back from a missing header timestamp to bag time.
+Every timeline carries one `ClockDomain`. Patch 3 introduced `bag`, `header`,
+and `controller`; Patch 4 adds `ros` so production policy can distinguish a
+timestamp's raw source field from the clock epoch it belongs to.
 
-Patch 4 will decide which clock domain and synchronization method each Doosan
-stream uses. Patch 3 does not make that policy choice.
+Synchronization across different domains is rejected. The engine never falls
+back from a missing header timestamp to bag time. A policy may place explicitly
+validated header- and bag-sourced timestamps into the same `ros` epoch only
+after proving that relationship at the episode boundary.
+
+Patch 4 owns the Doosan timestamp-source, clock-epoch, synchronization-method,
+and freshness policy. The generic planner remains payload-free.
 
 ## Freshness semantics
 

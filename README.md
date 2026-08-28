@@ -243,16 +243,35 @@ PYTHONPATH=src:$FORCEVLA/src:$FORCEVLA/lerobot:$FORCEVLA/dlimp $FORCEVLA_PY -m d
 The old `processed_to_lerobot_v21.py` direct three-camera exporter remains only
 as a legacy regression path; it is not the production Doosan ForceVLA contract.
 
+## Patch-9 Golden Episode-10 End-to-End Acceptance
+
+Patch 9 adds a single production acceptance command without changing any
+Patch-4 through Patch-8 semantics. It freezes the successful real Episode 10
+through raw MCAP identity, 1009 synchronized states, 1008 measured-action rows,
+two native-resolution videos, LeRobot v2.1 export, direct-PyAV pinned loader,
+and the Doosan ForceVLA 25D/32D adapter.
+
+See `docs/golden_episode10_acceptance_v1.md`. After sourcing ROS 2 Jazzy and
+the lab workspace, run the public command with system Python and provide the
+frozen ForceVLA Python executable:
+
+```bash
+PYTHONPATH="$REPO/src${PYTHONPATH:+:$PYTHONPATH}" /usr/bin/python3 -m doosan_forcevla_data.smoke.golden_episode10_end_to_end run RAW_EPISODE OUTPUT_ROOT --converter-root "$REPO" --forcevla-root "$FORCEVLA" --forcevla-python "$FORCEVLA_PY" --overwrite
+```
+
+A successful run writes `golden_episode10_acceptance.json` and ends with
+`GOLDEN_EPISODE10_ACCEPTANCE=PASS`.
+
 ## Lab Workstation Validation
 
 See `docs/lab_workstation_validation_checklist.md` for the lab workstation validation workflow using the validated ForceVLA environment.
 
 ## Limitations
 
-- No ROS dependency is included yet.
-- No integration with the lab `MyROS2` workspace is assumed.
-- No real robot recorder is implemented yet.
-- No LeRobot, parquet, Hugging Face, or ForceVLA training export is implemented yet.
+- Production raw MCAP ingest and synchronization require ROS 2 Jazzy; legacy and dummy tooling remains usable without ROS.
+- Production workstation validation assumes the lab `MyROS2` workspace is sourced so the recorded ROS message types are available.
+- Real robot recording is intentionally outside this repository and remains owned by the ROS workspace collector.
+- The production Doosan exporter writes LeRobot v2.1 Parquet plus exactly two MP4 camera videos and is validated through the frozen ForceVLA/LeRobot runtime; Hugging Face upload is intentionally not implemented.
 - Dummy image files are tiny PPM placeholders, not real camera captures.
 - The v0 raw validator checks structure and basic numeric validity only; it does not validate calibration, time synchronization quality, or task semantics.
 - The v0 processed output uses JSONL records for inspection and testing; it is not a final training storage format.

@@ -1,0 +1,28 @@
+Doosan ForceVLA data-tools validated source reference
+
+captured=2026-09-08T20:18:20+02:00
+repository_commit=dd8eb3bf31180f3f57df6bacd3e630e29540f7c1
+repository_branch=main
+remote_url=https://github.com/Raunak-Chakraborty/doosan-forcevla-data-tools.git
+
+Python:
+python_executable=/usr/bin/python3
+python_version=3.12.3
+
+Project dependency contract:
+requires-python = ">=3.10"
+dependencies = []
+lerobot-v21 = ["pyarrow>=24.0.0"]
+
+System tools:
+ffmpeg=/usr/bin/ffmpeg
+ffprobe=/usr/bin/ffprobe
+ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers
+ffprobe version 6.1.1-3ubuntu5 Copyright (c) 2007-2023 the FFmpeg developers
+
+Core repository hashes:
+2b84fa963a0b3303a2517e779e6ea77b4778511cba41b9f5ae85de53b74a9c59  pyproject.toml
+84995e1b26d0207903faa062fa91efa3ce17dd7862907d10d255848e1a90caa8  README.md
+
+ForceVLA thesis reproducibility commit:
+forcevla_thesis_commit=ef5ba4f5522d241fe72b559d2ccc331405f56b67

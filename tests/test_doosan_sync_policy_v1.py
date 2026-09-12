@@ -1,6 +1,9 @@
 import json
+from types import SimpleNamespace
 import unittest
+from unittest import mock
 
+from doosan_forcevla_data.sync import doosan_policy_v1 as module
 from doosan_forcevla_data.sync.doosan_policy_v1 import (
     POLICY_ID,
     REFERENCE_TIMESTAMP_SOURCE,
@@ -120,6 +123,54 @@ class DoosanSynchronizationPolicyTests(unittest.TestCase):
                 ),
                 values,
             )
+
+
+    def test_camera_info_is_constant_calibration_metadata_not_one_to_one_stream(self):
+        class FakeCameraInfoRecord:
+            def __init__(self, bag_ns: int, header_ns: int):
+                self.stamp = SimpleNamespace(
+                    bag_timestamp_ns=bag_ns,
+                    header_timestamp_ns=header_ns,
+                )
+
+        def record(bag_ns: int, header_ns: int | None):
+            return SimpleNamespace(
+                stamp=SimpleNamespace(
+                    bag_timestamp_ns=bag_ns,
+                    header_timestamp_ns=header_ns,
+                )
+            )
+
+        stream = [
+            (module.TCP_IMAGE_TOPIC, record(100, 100)),
+            # Two external images but only one CameraInfo, and neither timestamp matches.
+            (module.EXTERNAL_IMAGE_TOPIC, record(94, 95)),
+            (module.EXTERNAL_IMAGE_TOPIC, record(104, 105)),
+            (module.ROBOT_STATE_RT_TOPIC, record(99, None)),
+            (module.GRIPPER_STATE_TOPIC, record(100, 100)),
+            (module.JOINT_STATE_TOPIC, record(100, 100)),
+            (module.SPEEDL_STREAM_TOPIC, record(99, None)),
+            (module.JOY_TOPIC, record(100, 100)),
+            (module.TCP_CAMERA_INFO_TOPIC, FakeCameraInfoRecord(101, 101)),
+            (module.EXTERNAL_CAMERA_INFO_TOPIC, FakeCameraInfoRecord(96, 96)),
+        ]
+
+        def calibration(topic, _record):
+            return _calibration(topic)
+
+        with (
+            mock.patch.object(module, "CameraInfoRecord", FakeCameraInfoRecord),
+            mock.patch.object(module, "_camera_calibration", side_effect=calibration),
+            mock.patch.object(module, "iter_typed_messages", return_value=iter(stream)),
+        ):
+            inputs = module.collect_doosan_policy_inputs("/fake/episode")
+
+        self.assertEqual(inputs.reference_timestamps_ns, (100,))
+        self.assertEqual(inputs.source_timestamps("external_image"), (95, 105))
+        self.assertEqual(
+            inputs.external_calibration.topic,
+            module.EXTERNAL_CAMERA_INFO_TOPIC,
+        )
 
     def test_required_streams_complete_frame(self):
         result = build_doosan_sync_plan_from_inputs(_inputs())

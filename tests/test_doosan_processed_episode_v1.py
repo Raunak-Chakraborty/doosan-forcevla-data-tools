@@ -58,10 +58,15 @@ class _Plan:
 
 
 class _Sync:
-    def __init__(self, count: int):
-        self.dropped_reference_count = 0
+    def __init__(self, count: int, *, dropped_reference_indices=()):
+        self.dropped_reference_count = len(dropped_reference_indices)
         self.plan = _Plan(count)
-        self.inputs = _Inputs(_Calibration("tcp"), _Calibration("external"))
+        self.plan.dropped_reference_indices = tuple(dropped_reference_indices)
+        self.inputs = types.SimpleNamespace(
+            tcp_calibration=_Calibration("tcp"),
+            external_calibration=_Calibration("external"),
+            reference_timestamps_ns=tuple(1000 + i * 10 for i in range(count)),
+        )
 
 
 @dataclass(frozen=True)
@@ -110,8 +115,10 @@ class _GripperEpisode:
 class _ActionEpisode:
     def __init__(self, count: int):
         self.state_count = count
+        self.state_reference_indices = tuple(range(count))
         self.action_count = count - 1
         self.terminal_reference_index = count - 1
+        self.actionless_reference_indices = (count - 1,)
         self.actions = tuple(
             _Action(i, i + 1, 1000 + i * 10, 1000 + (i + 1) * 10, 1.0 if i + 1 == count - 1 else 0.0)
             for i in range(count - 1)
@@ -204,10 +211,79 @@ class DoosanProcessedEpisodeV1Tests(unittest.TestCase):
         self.assertEqual(metadata["synchronized_state_count"], 4)
         self.assertEqual(metadata["frame_count"], 3)
         self.assertEqual(metadata["excluded_terminal_reference_index"], 3)
+        self.assertEqual(metadata["excluded_actionless_reference_indices"], [3])
+        self.assertEqual(metadata["dropped_reference_indices"], [])
         self.assertFalse(metadata["terminal_action_emitted"])
         self.assertEqual(metadata["physical_camera_count"], 2)
         self.assertEqual(set(metadata["cameras"]), {"tcp_camera", "external_camera_2"})
         self.assertEqual(metadata["task"], "real_robot_demonstration")
+
+
+    def test_build_rows_preserves_original_reference_indices_and_does_not_bridge_gap(self):
+        refs = (0, 2, 3, 4)
+        force_episode = types.SimpleNamespace(
+            samples=tuple(_ForceSample(ref, 1000 + ref * 10) for ref in refs)
+        )
+        gripper_episode = types.SimpleNamespace(
+            samples=tuple(
+                _GripperSample(ref, 1000 + ref * 10, _State(0.0 if ref < 3 else 1.0))
+                for ref in refs
+            )
+        )
+        actions = types.SimpleNamespace(
+            state_count=4,
+            state_reference_indices=refs,
+            action_count=2,
+            terminal_reference_index=4,
+            actionless_reference_indices=(0, 4),
+            actions=(
+                _Action(2, 3, 1020, 1030, 1.0),
+                _Action(3, 4, 1030, 1040, 1.0),
+            ),
+        )
+        states = [tuple(float(i + j) for j in range(25)) for i in range(4)]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "episode_operator.json").write_text(
+                json.dumps({"task": "real_robot_demonstration"}), encoding="utf-8"
+            )
+            (root / "episode_validation.json").write_text(
+                json.dumps(
+                    {
+                        "metadata": {
+                            "custom_data": {
+                                "task": "real_robot_demonstration",
+                                "episode_index": 11,
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(
+                    module,
+                    "build_doosan_sync_plan",
+                    return_value=_Sync(5, dropped_reference_indices=(1,)),
+                ),
+                mock.patch.object(module, "build_doosan_force_proprio_episode", return_value=force_episode),
+                mock.patch.object(module, "build_doosan_gripper_episode", return_value=gripper_episode),
+                mock.patch.object(module, "build_doosan_measured_action_episode", return_value=actions),
+                mock.patch.object(module, "assemble_forcevla_v2_observation_states", return_value=states),
+            ):
+                rows, metadata = module.build_processed_rows(root)
+
+        self.assertEqual([row["frame_index"] for row in rows], [0, 1])
+        self.assertEqual([row["reference_index"] for row in rows], [2, 3])
+        self.assertEqual([row["action_target_reference_index"] for row in rows], [3, 4])
+        self.assertEqual(rows[0]["cameras"]["tcp_camera"]["source_index"], 2)
+        self.assertEqual(metadata["synchronized_state_count"], 4)
+        self.assertEqual(metadata["frame_count"], 2)
+        self.assertEqual(metadata["excluded_actionless_reference_indices"], [0, 4])
+        self.assertEqual(metadata["dropped_reference_count"], 1)
+        self.assertEqual(metadata["dropped_reference_indices"], [1])
+
 
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "requires ffmpeg and ffprobe")

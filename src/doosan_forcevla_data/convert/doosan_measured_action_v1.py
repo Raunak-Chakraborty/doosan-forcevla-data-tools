@@ -12,8 +12,10 @@ For source state ``t`` and target state ``t+1``:
 - gripper: absolute Patch-6 target open fraction at ``t+1``
 
 The terminal synchronized state has no measured successor, so Patch 7 emits no
-synthetic terminal action.  A state sequence of length ``N`` therefore produces
-exactly ``N-1`` measured action samples.
+synthetic terminal action. With a contiguous state sequence of length ``N`` this
+produces ``N-1`` actions. If Patch 4 drops references, Patch 7 preserves the
+original indices, emits actions only inside contiguous runs, and never bridges a
+gap.
 """
 
 from __future__ import annotations
@@ -208,26 +210,60 @@ class DoosanMeasuredAction:
 
 @dataclass(frozen=True)
 class DoosanMeasuredActionEpisode:
-    """Patch-7 action sequence with no fabricated terminal action."""
+    """Patch-7 actions over complete synchronized references without gap bridging.
+
+    ``state_reference_indices`` keeps the original Patch-4 TCP-camera reference
+    indices.  If a required source is stale or missing, Patch 4 may drop one or
+    more references.  Patch 7 emits actions only for original adjacent pairs
+    ``r -> r+1`` and leaves the end of each contiguous run actionless.
+    """
 
     state_count: int
     actions: tuple[DoosanMeasuredAction, ...]
+    state_reference_indices: tuple[int, ...] | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.state_count, bool) or self.state_count < 2:
             raise MeasuredActionError("state_count must be an integer >= 2")
-        if len(self.actions) != self.state_count - 1:
+
+        refs = self.state_reference_indices
+        if refs is None:
+            refs = tuple(range(self.state_count))
+            object.__setattr__(self, "state_reference_indices", refs)
+        if len(refs) != self.state_count:
             raise MeasuredActionError(
-                "Patch-7 requires exactly N-1 measured actions for N synchronized states"
+                "state_reference_indices length must equal state_count"
             )
-        for expected_source_index, action in enumerate(self.actions):
-            if action.source_reference_index != expected_source_index:
-                raise MeasuredActionError(
-                    "Patch-7 action source references must be exactly 0..N-2; "
-                    "dropped/non-adjacent reference frames require explicit later handling"
-                )
-            if action.target_reference_index != expected_source_index + 1:
-                raise MeasuredActionError("Patch-7 target reference sequence is inconsistent")
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in refs
+        ):
+            raise MeasuredActionError(
+                "state_reference_indices must contain non-negative integers"
+            )
+        if any(right <= left for left, right in zip(refs, refs[1:], strict=False)):
+            raise MeasuredActionError(
+                "state_reference_indices must be strictly increasing"
+            )
+
+        expected_pairs = tuple(
+            (left, right)
+            for left, right in zip(refs, refs[1:], strict=False)
+            if right == left + 1
+        )
+        if not expected_pairs:
+            raise MeasuredActionError(
+                "at least one adjacent complete reference pair is required"
+            )
+        actual_pairs = tuple(
+            (action.source_reference_index, action.target_reference_index)
+            for action in self.actions
+        )
+        if actual_pairs != expected_pairs:
+            raise MeasuredActionError(
+                "Patch-7 actions must cover exactly the adjacent complete reference "
+                "pairs and must never bridge a dropped reference gap"
+            )
 
     @property
     def action_count(self) -> int:
@@ -235,7 +271,20 @@ class DoosanMeasuredActionEpisode:
 
     @property
     def terminal_reference_index(self) -> int:
-        return self.state_count - 1
+        assert self.state_reference_indices is not None
+        return self.state_reference_indices[-1]
+
+    @property
+    def actionless_reference_indices(self) -> tuple[int, ...]:
+        """Complete references that cannot be action sources.
+
+        This includes the final reference and the final complete reference before
+        every dropped-reference gap.
+        """
+
+        assert self.state_reference_indices is not None
+        source_refs = {action.source_reference_index for action in self.actions}
+        return tuple(ref for ref in self.state_reference_indices if ref not in source_refs)
 
     @property
     def gripper_target_counts(self) -> dict[str, int]:
@@ -277,6 +326,7 @@ class DoosanMeasuredActionEpisode:
             "joy_primary_action": False,
             "terminal_policy": {
                 "terminal_reference_index": self.terminal_reference_index,
+                "actionless_reference_indices": list(self.actionless_reference_indices),
                 "terminal_action_emitted": False,
                 "synthetic_terminal_zero_action": False,
                 "training_row_policy": (
@@ -361,8 +411,8 @@ def build_doosan_measured_action_episode(
     robot_samples = force_proprio_episode.samples
     gripper_samples = gripper_episode.samples
 
-    for expected_index, (robot_sample, gripper_sample) in enumerate(
-        zip(robot_samples, gripper_samples, strict=True)
+    for robot_sample, gripper_sample in zip(
+        robot_samples, gripper_samples, strict=True
     ):
         if robot_sample.reference_index != gripper_sample.reference_index:
             raise MeasuredActionError(
@@ -372,24 +422,24 @@ def build_doosan_measured_action_episode(
             raise MeasuredActionError(
                 "Patch-5/Patch-6 reference timestamp mismatch at action boundary"
             )
-        if robot_sample.reference_index != expected_index:
-            raise MeasuredActionError(
-                "Patch-7 requires contiguous complete reference indices 0..N-1; "
-                f"expected {expected_index}, got {robot_sample.reference_index}"
-            )
 
     actions: list[DoosanMeasuredAction] = []
     for source_index in range(len(robot_samples) - 1):
         robot_t = robot_samples[source_index]
         robot_t1 = robot_samples[source_index + 1]
+        gripper_t = gripper_samples[source_index]
         gripper_t1 = gripper_samples[source_index + 1]
 
-        if robot_t1.reference_index != robot_t.reference_index + 1:
-            raise MeasuredActionError(
-                "Patch-7 refuses to bridge non-adjacent synchronized reference frames"
-            )
         if robot_t1.reference_timestamp_ns <= robot_t.reference_timestamp_ns:
             raise MeasuredActionError("reference timestamps must be strictly increasing")
+
+        if robot_t1.reference_index != robot_t.reference_index + 1:
+            if gripper_t.state.open_fraction != gripper_t1.state.open_fraction:
+                raise MeasuredActionError(
+                    "gripper held/released transition crosses a dropped reference gap; "
+                    "release action timing is ambiguous"
+                )
+            continue
 
         vector = compute_measured_action(
             robot_t.state,
@@ -410,6 +460,7 @@ def build_doosan_measured_action_episode(
 
     return DoosanMeasuredActionEpisode(
         state_count=len(robot_samples),
+        state_reference_indices=tuple(sample.reference_index for sample in robot_samples),
         actions=tuple(actions),
     )
 

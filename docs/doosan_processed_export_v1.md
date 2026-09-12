@@ -253,3 +253,14 @@ Patch 8 is accepted only when:
 - the pinned LeRobot v2.1 loader opens the local dataset;
 - the frozen Doosan ForceVLA adapter accepts both physical image views and
   constructs the right-wrist zero/mask-false slot internally.
+
+
+## Real-population dropped-reference row policy
+
+Processed training rows remain contiguous by `frame_index`, but retain the
+original TCP-camera `reference_index`. When Patch 4 drops a required-stream
+reference, Patch 8 omits the actionless end of that contiguous run and resumes
+rows at the next complete reference that has an adjacent complete successor.
+No action or video row bridges a dropped-reference gap. Metadata records
+`dropped_reference_indices` and `excluded_actionless_reference_indices`; the
+LeRobot timestamp remains regularized from contiguous training `frame_index`.

@@ -280,19 +280,34 @@ class EpisodeConstructionTests(unittest.TestCase):
         with self.assertRaisesRegex(MeasuredActionError, "timestamp mismatch"):
             build_doosan_measured_action_episode(force_episode, gripper_episode)
 
-    def test_noncontiguous_reference_index_is_rejected_instead_of_bridged(self):
+    def test_noncontiguous_reference_gap_is_segment_boundary_not_bridged(self):
+        positions = ((0.0, 0.0, 0.0), (0.1, 0.0, 0.0), (0.2, 0.0, 0.0), (0.3, 0.0, 0.0))
+        rotvecs = ((0.0, 0.0, 0.0),) * 4
+        refs = (0, 2, 3, 4)
+        force_episode = _force_episode(positions, rotvecs, reference_indices=refs)
+        gripper_episode = _gripper_episode(
+            (True, True, False, False),
+            reference_indices=refs,
+        )
+        episode = build_doosan_measured_action_episode(force_episode, gripper_episode)
+        self.assertEqual(episode.state_reference_indices, refs)
+        self.assertEqual(
+            [(a.source_reference_index, a.target_reference_index) for a in episode.actions],
+            [(2, 3), (3, 4)],
+        )
+        self.assertEqual(episode.actionless_reference_indices, (0, 4))
+        self.assertNotIn((0, 2), [(a.source_reference_index, a.target_reference_index) for a in episode.actions])
+
+    def test_gripper_transition_across_reference_gap_is_rejected(self):
         positions = ((0.0, 0.0, 0.0), (0.1, 0.0, 0.0), (0.2, 0.0, 0.0))
         rotvecs = ((0.0, 0.0, 0.0),) * 3
-        force_episode = _force_episode(
-            positions,
-            rotvecs,
-            reference_indices=(0, 2, 3),
-        )
+        refs = (0, 2, 3)
+        force_episode = _force_episode(positions, rotvecs, reference_indices=refs)
         gripper_episode = _gripper_episode(
             (True, False, False),
-            reference_indices=(0, 2, 3),
+            reference_indices=refs,
         )
-        with self.assertRaisesRegex(MeasuredActionError, "contiguous"):
+        with self.assertRaisesRegex(MeasuredActionError, "transition crosses"):
             build_doosan_measured_action_episode(force_episode, gripper_episode)
 
     def test_nonincreasing_reference_time_is_rejected(self):
@@ -349,7 +364,7 @@ class ActionObjectTests(unittest.TestCase):
             delta_rotvec_base_rad=(0.0, 0.0, 0.0),
             gripper_target_open_fraction=1.0,
         )
-        with self.assertRaisesRegex(MeasuredActionError, "N-1"):
+        with self.assertRaisesRegex(MeasuredActionError, "cover exactly"):
             DoosanMeasuredActionEpisode(state_count=3, actions=(action,))
 
 

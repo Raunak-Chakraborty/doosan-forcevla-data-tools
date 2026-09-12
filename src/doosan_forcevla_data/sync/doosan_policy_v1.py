@@ -460,15 +460,6 @@ def collect_doosan_policy_inputs(
     ):
         header_bag_offsets[topic] = []
 
-    image_header_times = {
-        TCP_IMAGE_TOPIC: [],
-        EXTERNAL_IMAGE_TOPIC: [],
-    }
-    camera_info_header_times = {
-        TCP_CAMERA_INFO_TOPIC: [],
-        EXTERNAL_CAMERA_INFO_TOPIC: [],
-    }
-
     calibrations: dict[str, CameraCalibration] = {}
 
     for topic, record in iter_typed_messages(episode_dir):
@@ -489,7 +480,6 @@ def collect_doosan_policy_inputs(
                 )
             timestamp = int(header_ns)
             selected_times[REFERENCE_KEY].append(timestamp)
-            image_header_times[TCP_IMAGE_TOPIC].append(timestamp)
             continue
 
         policy = _SOURCE_POLICY_BY_TOPIC.get(topic)
@@ -507,7 +497,6 @@ def collect_doosan_policy_inputs(
                     raise DoosanPolicyError(
                         f"{EXTERNAL_IMAGE_TOPIC}: image lacks header timestamp"
                     )
-                image_header_times[EXTERNAL_IMAGE_TOPIC].append(int(header_ns))
             continue
 
         if topic in (TCP_CAMERA_INFO_TOPIC, EXTERNAL_CAMERA_INFO_TOPIC):
@@ -518,7 +507,6 @@ def collect_doosan_policy_inputs(
             if header_ns is None:
                 raise DoosanPolicyError(f"{topic}: CameraInfo lacks header timestamp")
 
-            camera_info_header_times[topic].append(int(header_ns))
             calibration = _camera_calibration(topic, record)
 
             previous = calibrations.get(topic)
@@ -529,21 +517,11 @@ def collect_doosan_policy_inputs(
                     f"{topic}: CameraInfo calibration changed within one episode"
                 )
 
-    if (
-        image_header_times[TCP_IMAGE_TOPIC]
-        != camera_info_header_times[TCP_CAMERA_INFO_TOPIC]
-    ):
-        raise DoosanPolicyError(
-            "TCP Image and CameraInfo header timestamp sequences are not identical"
-        )
-
-    if (
-        image_header_times[EXTERNAL_IMAGE_TOPIC]
-        != camera_info_header_times[EXTERNAL_CAMERA_INFO_TOPIC]
-    ):
-        raise DoosanPolicyError(
-            "external Image and CameraInfo header timestamp sequences are not identical"
-        )
+    # CameraInfo is episode calibration metadata, not a synchronized model stream.
+    # Real RealSense publishers may emit a small number of unmatched Image or
+    # CameraInfo messages at episode boundaries.  Require at least one CameraInfo
+    # sample per physical camera (below) and require the calibration payload to
+    # remain constant (above), but do not require one-for-one timestamp identity.
 
     try:
         tcp_calibration = calibrations[TCP_CAMERA_INFO_TOPIC]

@@ -85,10 +85,39 @@ def validate_doosan_processed_episode_v1(path: str | Path) -> ProcessedValidatio
         errors.append("frame_count does not equal frames.jsonl row count")
     if metadata.get("measured_action_count") != len(rows):
         errors.append("measured_action_count does not equal row count")
-    if metadata.get("synchronized_state_count") != len(rows) + 1:
-        errors.append("processed episode must contain N-1 rows for N synchronized states")
-    if metadata.get("excluded_terminal_reference_index") != len(rows):
-        errors.append("excluded terminal reference must equal the first non-row reference index")
+    synchronized_state_count = metadata.get("synchronized_state_count")
+    if (
+        isinstance(synchronized_state_count, bool)
+        or not isinstance(synchronized_state_count, int)
+        or synchronized_state_count < len(rows) + 1
+    ):
+        errors.append("synchronized_state_count must be at least action-bearing row count + 1")
+    excluded_terminal = metadata.get("excluded_terminal_reference_index")
+    if isinstance(excluded_terminal, bool) or not isinstance(excluded_terminal, int) or excluded_terminal < 0:
+        errors.append("excluded_terminal_reference_index must be a non-negative integer")
+
+    actionless = metadata.get("excluded_actionless_reference_indices")
+    if actionless is not None:
+        if not (
+            isinstance(actionless, list)
+            and all(isinstance(value, int) and not isinstance(value, bool) and value >= 0 for value in actionless)
+            and actionless == sorted(set(actionless))
+        ):
+            errors.append("excluded_actionless_reference_indices must be sorted unique non-negative integers")
+        elif excluded_terminal not in actionless:
+            errors.append("excluded terminal reference must be actionless")
+
+    dropped = metadata.get("dropped_reference_indices")
+    dropped_count = metadata.get("dropped_reference_count")
+    if dropped is not None or dropped_count is not None:
+        if not (
+            isinstance(dropped, list)
+            and all(isinstance(value, int) and not isinstance(value, bool) and value >= 0 for value in dropped)
+            and dropped == sorted(set(dropped))
+        ):
+            errors.append("dropped_reference_indices must be sorted unique non-negative integers")
+        elif dropped_count != len(dropped):
+            errors.append("dropped_reference_count does not match dropped_reference_indices")
     if metadata.get("terminal_action_emitted") is not False:
         errors.append("terminal_action_emitted must be false")
     if metadata.get("physical_camera_count") != 2:
@@ -101,13 +130,21 @@ def validate_doosan_processed_episode_v1(path: str | Path) -> ProcessedValidatio
         errors.append("task must be a non-empty exact source string")
 
     previous_reference_timestamp: int | None = None
+    previous_reference_index: int | None = None
+    row_reference_indices: list[int] = []
     for index, row in enumerate(rows):
         if row.get("frame_index") != index:
             errors.append(f"row {index}: frame_index mismatch")
-        if row.get("reference_index") != index:
-            errors.append(f"row {index}: reference_index mismatch")
-        if row.get("action_target_reference_index") != index + 1:
-            errors.append(f"row {index}: action target must be next reference")
+        reference_index = row.get("reference_index")
+        if isinstance(reference_index, bool) or not isinstance(reference_index, int) or reference_index < 0:
+            errors.append(f"row {index}: reference_index must be non-negative int")
+        else:
+            if previous_reference_index is not None and reference_index <= previous_reference_index:
+                errors.append(f"row {index}: reference_index must be strictly increasing")
+            previous_reference_index = reference_index
+            row_reference_indices.append(reference_index)
+            if row.get("action_target_reference_index") != reference_index + 1:
+                errors.append(f"row {index}: action target must be original reference+1")
         timestamp = row.get("reference_timestamp_ns")
         if isinstance(timestamp, bool) or not isinstance(timestamp, int):
             errors.append(f"row {index}: reference_timestamp_ns must be int")
@@ -129,8 +166,8 @@ def validate_doosan_processed_episode_v1(path: str | Path) -> ProcessedValidatio
             continue
         tcp = cameras[TCP_CAMERA_KEY]
         ext = cameras[EXTERNAL_CAMERA_KEY]
-        if not isinstance(tcp, dict) or tcp.get("source_index") != index:
-            errors.append(f"row {index}: TCP source index must equal reference index")
+        if not isinstance(tcp, dict) or tcp.get("source_index") != row.get("reference_index"):
+            errors.append(f"row {index}: TCP source index must equal original reference index")
         for camera, entry in ((TCP_CAMERA_KEY, tcp), (EXTERNAL_CAMERA_KEY, ext)):
             if not isinstance(entry, dict):
                 errors.append(f"row {index}: {camera} selection must be object")
@@ -142,8 +179,10 @@ def validate_doosan_processed_episode_v1(path: str | Path) -> ProcessedValidatio
             if isinstance(header_timestamp, bool) or not isinstance(header_timestamp, int) or header_timestamp < 0:
                 errors.append(f"row {index}: {camera} header timestamp invalid")
 
-    if rows and rows[-1].get("reference_index") == metadata.get("excluded_terminal_reference_index"):
+    if metadata.get("excluded_terminal_reference_index") in row_reference_indices:
         errors.append("terminal reference is present as a training row")
+    if isinstance(actionless, list) and set(actionless) & set(row_reference_indices):
+        errors.append("actionless reference is present as a training row")
 
     for camera in (TCP_CAMERA_KEY, EXTERNAL_CAMERA_KEY):
         spec = CAMERA_SPECS[camera]

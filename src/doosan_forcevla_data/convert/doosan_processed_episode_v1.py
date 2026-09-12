@@ -349,28 +349,38 @@ def build_processed_rows(episode_dir: str | Path) -> tuple[list[dict[str, Any]],
     action_episode = build_doosan_measured_action_episode(force_episode, gripper_episode)
     states = assemble_forcevla_v2_observation_states(force_episode, gripper_episode)
 
-    if sync_result.dropped_reference_count != 0:
-        raise ProcessedEpisodeError("Patch 8 v1 requires zero dropped Patch-4 references")
     if len(states) != action_episode.state_count:
         raise ProcessedEpisodeError("Patch-5/6 state count differs from Patch-7 state_count")
-    if action_episode.action_count != len(states) - 1:
-        raise ProcessedEpisodeError("Patch-7 action geometry is inconsistent")
+
+    force_by_reference = {sample.reference_index: sample for sample in force_episode.samples}
+    gripper_by_reference = {sample.reference_index: sample for sample in gripper_episode.samples}
+    state_by_reference = {
+        sample.reference_index: tuple(float(value) for value in state)
+        for sample, state in zip(force_episode.samples, states, strict=True)
+    }
+    expected_refs = set(action_episode.state_reference_indices or ())
+    if set(force_by_reference) != expected_refs or set(gripper_by_reference) != expected_refs:
+        raise ProcessedEpisodeError("Patch-5/6 reference sets differ from Patch-7 state references")
 
     external_plan = sync_result.plan.source_plan("external_image")
-    if len(external_plan.decisions) != len(states):
-        raise ProcessedEpisodeError("external-image decision count differs from synchronized state count")
+    total_reference_count = len(sync_result.inputs.reference_timestamps_ns)
+    if len(external_plan.decisions) != total_reference_count:
+        raise ProcessedEpisodeError("external-image decision count differs from reference timeline count")
 
     rows: list[dict[str, Any]] = []
     for frame_index, action in enumerate(action_episode.actions):
         reference_index = action.source_reference_index
-        if reference_index != frame_index:
-            raise ProcessedEpisodeError("Patch-8 v1 requires contiguous action-bearing references 0..N-2")
         if action.target_reference_index != reference_index + 1:
-            raise ProcessedEpisodeError("Patch-8 action target is not the next synchronized reference")
+            raise ProcessedEpisodeError("Patch-8 action target is not the next original reference")
 
-        force_sample = force_episode.samples[reference_index]
-        gripper_sample = gripper_episode.samples[reference_index]
-        state = tuple(float(value) for value in states[reference_index])
+        try:
+            force_sample = force_by_reference[reference_index]
+            gripper_sample = gripper_by_reference[reference_index]
+            state = state_by_reference[reference_index]
+        except KeyError as exc:
+            raise ProcessedEpisodeError(
+                f"reference {reference_index}: action source lacks synchronized state"
+            ) from exc
         action_vector = tuple(float(value) for value in action.to_vector())
 
         if len(state) != OBSERVATION_STATE_DIM or not all(math.isfinite(value) for value in state):
@@ -429,12 +439,18 @@ def build_processed_rows(episode_dir: str | Path) -> tuple[list[dict[str, Any]],
         "frame_count": len(rows),
         "measured_action_count": action_episode.action_count,
         "excluded_terminal_reference_index": action_episode.terminal_reference_index,
+        "excluded_actionless_reference_indices": list(action_episode.actionless_reference_indices),
+        "dropped_reference_count": sync_result.dropped_reference_count,
+        "dropped_reference_indices": list(sync_result.plan.dropped_reference_indices),
         "terminal_action_emitted": False,
         "state_dim": OBSERVATION_STATE_DIM,
         "state_fields": list(OBSERVATION_STATE_FIELDS),
         "action_dim": ACTION_DIM,
         "action_fields": list(ACTION_FIELDS),
-        "row_policy": "source observation t paired with measured Patch-7 action t->t+1",
+        "row_policy": (
+            "source observation at original reference r paired only with measured Patch-7 "
+            "action r->r+1; no action bridges a dropped-reference gap"
+        ),
         "lerobot_timestamp_policy": "frame_index / 30; original ROS reference timestamps retained separately",
         "physical_camera_count": 2,
         "cameras": CAMERA_SPECS,

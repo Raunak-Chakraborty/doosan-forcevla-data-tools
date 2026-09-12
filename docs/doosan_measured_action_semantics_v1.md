@@ -157,5 +157,17 @@ Patch 7 is accepted only when:
 - gripper action equals the Patch-6 target state, not a delta;
 - actions never use SpeedL or Joy as the primary label;
 - there is no episode-boundary transition;
-- an `N`-state episode produces exactly `N-1` actions;
+- a contiguous `N`-state episode produces exactly `N-1` actions; with dropped references, one action is omitted at each gap boundary;
 - no synthetic terminal zero action is emitted.
+
+
+## Dropped synchronization references
+
+A required-stream freshness miss may cause Patch 4 to drop an original TCP-camera
+reference. Patch 7 preserves the original reference indices and emits an action
+only when two complete synchronized states are adjacent on that original timeline
+(`r -> r+1`). It never compresses the surviving states and never fabricates a
+larger-step action across a gap. The final complete reference before each gap is
+actionless, as is the final reference of the episode. If the held/released
+gripper transition itself falls across a dropped-reference gap, conversion fails
+closed because the release-action timing is ambiguous.

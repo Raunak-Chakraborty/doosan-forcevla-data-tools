@@ -212,9 +212,18 @@ def _features() -> dict[str, dict[str, Any]]:
 
 def _dataset_rows(processed_rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
+    previous_reference_index: int | None = None
     for index, row in enumerate(processed_rows):
-        if row.get("frame_index") != index or row.get("reference_index") != index:
-            raise LeRobotExportError(f"processed row {index}: non-contiguous source/reference index")
+        if row.get("frame_index") != index:
+            raise LeRobotExportError(f"processed row {index}: non-contiguous frame_index")
+        reference_index = row.get("reference_index")
+        if isinstance(reference_index, bool) or not isinstance(reference_index, int) or reference_index < 0:
+            raise LeRobotExportError(f"processed row {index}: invalid source reference_index")
+        if previous_reference_index is not None and reference_index <= previous_reference_index:
+            raise LeRobotExportError(f"processed row {index}: source reference_index is not increasing")
+        if row.get("action_target_reference_index") not in (None, reference_index + 1):
+            raise LeRobotExportError(f"processed row {index}: action bridges a reference gap")
+        previous_reference_index = reference_index
         timestamp = row.get("lerobot_timestamp")
         if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
             raise LeRobotExportError(f"processed row {index}: invalid LeRobot timestamp")
@@ -314,8 +323,11 @@ def export_doosan_processed_to_lerobot_v21(
         raise LeRobotExportError("cannot export an empty processed episode")
     if metadata.get("frame_count") != frame_count:
         raise LeRobotExportError("processed frame_count changed during export")
-    if metadata.get("excluded_terminal_reference_index") != frame_count:
-        raise LeRobotExportError("terminal reference policy does not match N action-bearing rows")
+    excluded_terminal = metadata.get("excluded_terminal_reference_index")
+    if isinstance(excluded_terminal, bool) or not isinstance(excluded_terminal, int) or excluded_terminal < 0:
+        raise LeRobotExportError("processed terminal reference metadata is invalid")
+    if excluded_terminal in {row.get("reference_index") for row in processed_rows}:
+        raise LeRobotExportError("terminal reference must not be action-bearing")
 
     if output.exists() or output.is_symlink():
         if not overwrite:
@@ -409,6 +421,12 @@ def export_doosan_processed_to_lerobot_v21(
             "terminal_policy": {
                 "synchronized_state_count": metadata.get("synchronized_state_count"),
                 "excluded_terminal_reference_index": metadata.get("excluded_terminal_reference_index"),
+                "excluded_actionless_reference_indices": metadata.get(
+                    "excluded_actionless_reference_indices",
+                    [metadata.get("excluded_terminal_reference_index")],
+                ),
+                "dropped_reference_count": metadata.get("dropped_reference_count", 0),
+                "dropped_reference_indices": metadata.get("dropped_reference_indices", []),
                 "terminal_action_emitted": False,
                 "synthetic_terminal_zero_action": False,
             },

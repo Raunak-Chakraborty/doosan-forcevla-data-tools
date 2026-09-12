@@ -78,16 +78,13 @@ is never repaired or zero-filled.
 
 ## CameraInfo handling
 
-For both cameras in Episode 10:
-
-- every image header timestamp exactly equals the corresponding CameraInfo
-  header timestamp
-- each CameraInfo topic has exactly one calibration signature across the
-  episode
-
-Patch 4 therefore validates CameraInfo pairing and calibration constancy, then
-treats the calibration as episode metadata. CameraInfo is not a separate
-per-frame synchronization dependency.
+Episode 10 happened to have one-for-one Image/CameraInfo timestamp identity,
+but the real production population can contain a small number of unmatched
+boundary messages. CameraInfo is therefore treated as episode calibration
+metadata: each physical camera must provide CameraInfo, its calibration payload
+must remain constant through the episode, and its header/bag clock evidence
+must remain plausible. Exact Image/CameraInfo count or timestamp equality is
+not required. CameraInfo is not a separate per-frame synchronization dependency.
 
 ## Other raw streams
 

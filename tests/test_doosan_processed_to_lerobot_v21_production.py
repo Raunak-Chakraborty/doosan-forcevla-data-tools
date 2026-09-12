@@ -57,6 +57,43 @@ class DoosanProcessedToLeRobotV21ProductionTests(unittest.TestCase):
         self.assertEqual(rows[2]["episode_index"], 0)
         self.assertEqual(rows[2]["task_index"], 0)
 
+    def test_dataset_rows_allow_noncontiguous_source_references_but_keep_contiguous_frame_index(self):
+        processed = [
+            {
+                "frame_index": 0,
+                "reference_index": 2,
+                "action_target_reference_index": 3,
+                "lerobot_timestamp": 0.0,
+                "observation_state_25d": [0.0] * 25,
+                "action_7d": [0.0] * 7,
+            },
+            {
+                "frame_index": 1,
+                "reference_index": 3,
+                "action_target_reference_index": 4,
+                "lerobot_timestamp": 1 / 30,
+                "observation_state_25d": [1.0] * 25,
+                "action_7d": [1.0] * 7,
+            },
+        ]
+        rows = module._dataset_rows(processed)
+        self.assertEqual([row["frame_index"] for row in rows], [0, 1])
+        self.assertEqual([row["index"] for row in rows], [0, 1])
+
+    def test_dataset_rows_reject_action_that_bridges_reference_gap(self):
+        processed = [
+            {
+                "frame_index": 0,
+                "reference_index": 2,
+                "action_target_reference_index": 4,
+                "lerobot_timestamp": 0.0,
+                "observation_state_25d": [0.0] * 25,
+                "action_7d": [0.0] * 7,
+            }
+        ]
+        with self.assertRaisesRegex(module.LeRobotExportError, "bridges"):
+            module._dataset_rows(processed)
+
     def test_feature_stats_are_population_statistics_with_lerobot_count_shape(self):
         stats = module._feature_stats([[0.0, 2.0], [2.0, 4.0]])
         self.assertEqual(stats["min"], [0.0, 2.0])

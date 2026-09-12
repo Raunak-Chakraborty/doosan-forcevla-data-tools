@@ -26,6 +26,11 @@ import math
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+from doosan_forcevla_data.convert.orientation_representation_v1 import (
+    OrientationRepresentationError,
+    matrix_to_principal_rotvec,
+    rotvec_to_matrix,
+)
 from doosan_forcevla_data.ingest.doosan_raw_v1 import (
     ROBOT_STATE_RT_TOPIC,
     RobotStateRtRecord,
@@ -440,103 +445,23 @@ def doosan_zyz_deg_to_matrix(
 def rotation_matrix_to_rotvec(
     matrix: Sequence[Sequence[float]],
 ) -> tuple[float, float, float]:
-    """Return the principal SO(3) logarithm as a rotation vector in radians."""
+    """Compatibility wrapper for the principal Patch-11A SO(3) logarithm."""
 
-    r = _validated_rotation_matrix(matrix)
-    trace = r[0][0] + r[1][1] + r[2][2]
-
-    if trace > 0.0:
-        s = 2.0 * math.sqrt(max(trace + 1.0, 0.0))
-        if s <= 0.0:  # pragma: no cover - guarded by trace > 0
-            raise ForceProprioError("failed to convert rotation matrix to quaternion")
-        qx = (r[2][1] - r[1][2]) / s
-        qy = (r[0][2] - r[2][0]) / s
-        qz = (r[1][0] - r[0][1]) / s
-        qw = 0.25 * s
-    elif r[0][0] >= r[1][1] and r[0][0] >= r[2][2]:
-        s = 2.0 * math.sqrt(max(1.0 + r[0][0] - r[1][1] - r[2][2], 0.0))
-        if s <= 0.0:
-            raise ForceProprioError("failed to convert rotation matrix near pi")
-        qx = 0.25 * s
-        qy = (r[0][1] + r[1][0]) / s
-        qz = (r[0][2] + r[2][0]) / s
-        qw = (r[2][1] - r[1][2]) / s
-    elif r[1][1] >= r[2][2]:
-        s = 2.0 * math.sqrt(max(1.0 + r[1][1] - r[0][0] - r[2][2], 0.0))
-        if s <= 0.0:
-            raise ForceProprioError("failed to convert rotation matrix near pi")
-        qx = (r[0][1] + r[1][0]) / s
-        qy = 0.25 * s
-        qz = (r[1][2] + r[2][1]) / s
-        qw = (r[0][2] - r[2][0]) / s
-    else:
-        s = 2.0 * math.sqrt(max(1.0 + r[2][2] - r[0][0] - r[1][1], 0.0))
-        if s <= 0.0:
-            raise ForceProprioError("failed to convert rotation matrix near pi")
-        qx = (r[0][2] + r[2][0]) / s
-        qy = (r[1][2] + r[2][1]) / s
-        qz = 0.25 * s
-        qw = (r[1][0] - r[0][1]) / s
-
-    qnorm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
-    if not math.isfinite(qnorm) or qnorm <= 0.0:
-        raise ForceProprioError("rotation matrix produced an invalid quaternion")
-    qx, qy, qz, qw = (value / qnorm for value in (qx, qy, qz, qw))
-
-    # q and -q represent the same rotation.  Force the principal angle into
-    # [0, pi] by choosing a non-negative scalar component.
-    if qw < 0.0:
-        qx, qy, qz, qw = -qx, -qy, -qz, -qw
-
-    vector_norm = math.sqrt(qx * qx + qy * qy + qz * qz)
-    if vector_norm < 1e-15:
-        return (0.0, 0.0, 0.0)
-
-    angle = 2.0 * math.atan2(vector_norm, max(qw, 0.0))
-    if angle > math.pi and angle - math.pi < 1e-12:
-        angle = math.pi
-    if not 0.0 <= angle <= math.pi + 1e-12:
-        raise ForceProprioError(f"principal rotation angle out of range: {angle}")
-    scale = angle / vector_norm
-    return (qx * scale, qy * scale, qz * scale)
+    try:
+        return matrix_to_principal_rotvec(matrix)
+    except OrientationRepresentationError as exc:
+        raise ForceProprioError(str(exc)) from exc
 
 
 def rotation_vector_to_matrix(
     rotvec_rad: Sequence[float],
 ) -> tuple[tuple[float, float, float], ...]:
-    """Rodrigues exponential map used for physical round-trip validation."""
+    """Compatibility wrapper for the Patch-11A Rodrigues exponential map."""
 
-    x, y, z = _require_finite_vector(rotvec_rad, 3, "rotation vector")
-    angle = math.sqrt(x * x + y * y + z * z)
-    if angle < 1e-15:
-        return (
-            (1.0, 0.0, 0.0),
-            (0.0, 1.0, 0.0),
-            (0.0, 0.0, 1.0),
-        )
-
-    kx, ky, kz = x / angle, y / angle, z / angle
-    c = math.cos(angle)
-    s = math.sin(angle)
-    one_minus_c = 1.0 - c
-    matrix = (
-        (
-            c + kx * kx * one_minus_c,
-            kx * ky * one_minus_c - kz * s,
-            kx * kz * one_minus_c + ky * s,
-        ),
-        (
-            ky * kx * one_minus_c + kz * s,
-            c + ky * ky * one_minus_c,
-            ky * kz * one_minus_c - kx * s,
-        ),
-        (
-            kz * kx * one_minus_c - ky * s,
-            kz * ky * one_minus_c + kx * s,
-            c + kz * kz * one_minus_c,
-        ),
-    )
-    return _validated_rotation_matrix(matrix)
+    try:
+        return rotvec_to_matrix(rotvec_rad)
+    except OrientationRepresentationError as exc:
+        raise ForceProprioError(str(exc)) from exc
 
 
 def doosan_zyz_deg_to_rotvec(

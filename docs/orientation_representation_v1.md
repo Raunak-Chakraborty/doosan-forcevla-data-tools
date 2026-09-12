@@ -152,3 +152,40 @@ Patch 11A intentionally does not:
 
 Those changes, where required, belong to later integration patches after this
 math layer is accepted.
+
+## Patch 11B export integration
+
+Patch 11B keeps the canonical processed-v1 episode unchanged: its stored
+`observation_state_25d` remains the validated principal-rotvec 25D state.
+Representation selection happens only when producing the model-facing LeRobot
+`observation.state`.
+
+The production exporter accepts two orthogonal choices:
+
+- `--orientation-representation` = `rotvec_principal`, `rotvec_continuous`,
+  `quaternion`, or `rotation6d`;
+- `--state-mode` = `full` or `no_wrench`.
+
+The resulting dimensions are:
+
+| orientation representation | no_wrench | full |
+| --- | ---: | ---: |
+| `rotvec_principal` | 19 | 25 |
+| `rotvec_continuous` | 19 | 25 |
+| `quaternion` | 20 | 26 |
+| `rotation6d` | 22 | 28 |
+
+`full` always places the six wrench channels last. `no_wrench` removes exactly
+those six channels and changes nothing else. The semantic action remains the
+same measured 7D action in every case.
+
+The historical/default exporter invocation remains equivalent to
+`rotvec_principal + full`; its state values and existing legacy metadata contract
+remain unchanged. Every non-default export writes an explicit
+`model_state_profile` object to `meta/export_provenance.json`, including the
+representation, state mode, exact field names, dimensions, and orientation
+convention.
+
+`rotvec_continuous` is lifted in exported training-row order. This is explicit
+in provenance because it is a stateful sequence representation; it does not
+change the physical rotation represented by any row.

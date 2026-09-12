@@ -7,7 +7,9 @@ thesis repository and preserves the Patch-8 two-camera contract:
 * ``observation.images.external_camera_2`` is the physical D435I video;
 * ``observation.images.tcp_camera`` is the physical D405 video;
 * no third physical image feature is exported;
-* ``observation.state`` is the exact 25D Patch-5/6 state;
+* ``observation.state`` defaults to the exact legacy 25D Patch-5/6 state;
+* opt-in export profiles may encode absolute TCP orientation as continuous rotvec,
+  quaternion, or rotation6d and may omit the final six wrench channels;
 * ``action`` is the exact 7D Patch-7 measured action;
 * the terminal synchronized reference without a measured action is absent;
 * the episode task string is copied exactly from acquisition metadata.
@@ -34,6 +36,17 @@ from doosan_forcevla_data.convert.doosan_force_proprio_v1 import (
 from doosan_forcevla_data.convert.doosan_measured_action_v1 import (
     ACTION_DIM,
     ACTION_FIELDS,
+)
+from doosan_forcevla_data.convert.model_state_profile_v1 import (
+    ModelStateLayout,
+    ModelStateProfileError,
+    StateMode,
+    encode_legacy_observation_states,
+    model_state_layout,
+)
+from doosan_forcevla_data.convert.orientation_representation_v1 import (
+    OrientationRepresentation,
+    OrientationRepresentationError,
 )
 from doosan_forcevla_data.convert.doosan_processed_episode_v1 import (
     CAMERA_SPECS,
@@ -178,12 +191,15 @@ def _scalar_stats(values: Sequence[int | float]) -> dict[str, list[float] | list
     return _feature_stats([[float(value)] for value in values])
 
 
-def _features() -> dict[str, dict[str, Any]]:
+def _features(
+    layout: ModelStateLayout | None = None,
+) -> dict[str, dict[str, Any]]:
+    resolved_layout = layout or model_state_layout()
     features: dict[str, dict[str, Any]] = {
         "observation.state": {
             "dtype": "float64",
-            "shape": [OBSERVATION_STATE_DIM],
-            "names": list(OBSERVATION_STATE_FIELDS),
+            "shape": [resolved_layout.state_dim],
+            "names": list(resolved_layout.state_fields),
         },
         "action": {
             "dtype": "float64",
@@ -210,32 +226,76 @@ def _features() -> dict[str, dict[str, Any]]:
     return features
 
 
-def _dataset_rows(processed_rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+def _dataset_rows(
+    processed_rows: Sequence[dict[str, Any]],
+    *,
+    layout: ModelStateLayout | None = None,
+) -> list[dict[str, Any]]:
+    resolved_layout = layout or model_state_layout()
+    canonical_states: list[list[float]] = []
+    for index, row in enumerate(processed_rows):
+        canonical_states.append(
+            _finite_vector(
+                row.get("observation_state_25d"),
+                OBSERVATION_STATE_DIM,
+                f"row {index} canonical state",
+            )
+        )
+    try:
+        model_states = encode_legacy_observation_states(
+            canonical_states,
+            layout=resolved_layout,
+        )
+    except ModelStateProfileError as exc:
+        raise LeRobotExportError(str(exc)) from exc
+
     result: list[dict[str, Any]] = []
     previous_reference_index: int | None = None
-    for index, row in enumerate(processed_rows):
+    for index, (row, model_state) in enumerate(
+        zip(processed_rows, model_states, strict=True)
+    ):
         if row.get("frame_index") != index:
             raise LeRobotExportError(f"processed row {index}: non-contiguous frame_index")
         reference_index = row.get("reference_index")
-        if isinstance(reference_index, bool) or not isinstance(reference_index, int) or reference_index < 0:
-            raise LeRobotExportError(f"processed row {index}: invalid source reference_index")
-        if previous_reference_index is not None and reference_index <= previous_reference_index:
-            raise LeRobotExportError(f"processed row {index}: source reference_index is not increasing")
-        if row.get("action_target_reference_index") not in (None, reference_index + 1):
-            raise LeRobotExportError(f"processed row {index}: action bridges a reference gap")
+        if (
+            isinstance(reference_index, bool)
+            or not isinstance(reference_index, int)
+            or reference_index < 0
+        ):
+            raise LeRobotExportError(
+                f"processed row {index}: invalid source reference_index"
+            )
+        if (
+            previous_reference_index is not None
+            and reference_index <= previous_reference_index
+        ):
+            raise LeRobotExportError(
+                f"processed row {index}: source reference_index is not increasing"
+            )
+        if row.get("action_target_reference_index") not in (
+            None,
+            reference_index + 1,
+        ):
+            raise LeRobotExportError(
+                f"processed row {index}: action bridges a reference gap"
+            )
         previous_reference_index = reference_index
         timestamp = row.get("lerobot_timestamp")
         if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)):
-            raise LeRobotExportError(f"processed row {index}: invalid LeRobot timestamp")
+            raise LeRobotExportError(
+                f"processed row {index}: invalid LeRobot timestamp"
+            )
         expected_timestamp = index / FPS
         if abs(float(timestamp) - expected_timestamp) > 1e-12:
-            raise LeRobotExportError(f"processed row {index}: timestamp is not frame_index/{FPS}")
+            raise LeRobotExportError(
+                f"processed row {index}: timestamp is not frame_index/{FPS}"
+            )
         result.append(
             {
-                "observation.state": _finite_vector(
-                    row.get("observation_state_25d"), OBSERVATION_STATE_DIM, f"row {index} state"
+                "observation.state": list(model_state),
+                "action": _finite_vector(
+                    row.get("action_7d"), ACTION_DIM, f"row {index} action"
                 ),
-                "action": _finite_vector(row.get("action_7d"), ACTION_DIM, f"row {index} action"),
                 "timestamp": float(expected_timestamp),
                 "frame_index": index,
                 "episode_index": 0,
@@ -290,11 +350,19 @@ def export_doosan_processed_to_lerobot_v21(
     output_dir: str | Path,
     *,
     overwrite: bool = False,
+    orientation_representation: OrientationRepresentation | str = (
+        OrientationRepresentation.ROTVEC_PRINCIPAL
+    ),
+    state_mode: StateMode | str = StateMode.FULL,
 ) -> Path:
     """Export one production Patch-8 processed episode as one LeRobot v2.1 episode."""
 
     processed_root = Path(processed_episode_dir).resolve()
     output = Path(output_dir).resolve()
+    try:
+        layout = model_state_layout(orientation_representation, state_mode)
+    except (ModelStateProfileError, OrientationRepresentationError) as exc:
+        raise LeRobotExportError(str(exc)) from exc
     if not processed_root.is_dir():
         raise LeRobotExportError(f"processed episode does not exist: {processed_root}")
     if output == processed_root or processed_root in output.parents:
@@ -317,7 +385,7 @@ def export_doosan_processed_to_lerobot_v21(
     task = task.strip()
 
     processed_rows = _read_jsonl(processed_root / "frames.jsonl")
-    rows = _dataset_rows(processed_rows)
+    rows = _dataset_rows(processed_rows, layout=layout)
     frame_count = len(rows)
     if frame_count <= 0:
         raise LeRobotExportError("cannot export an empty processed episode")
@@ -372,7 +440,7 @@ def export_doosan_processed_to_lerobot_v21(
             "splits": {"train": "0:1"},
             "data_path": DATA_PATH_TEMPLATE,
             "video_path": VIDEO_PATH_TEMPLATE,
-            "features": _features(),
+            "features": _features(layout),
         }
         _write_json(staging / "meta" / "info.json", info)
         _write_jsonl(staging / "meta" / "tasks.jsonl", [{"task_index": 0, "task": task}])
@@ -416,7 +484,7 @@ def export_doosan_processed_to_lerobot_v21(
             "target_dlimp_commit": EXPECTED_DLIMP_COMMIT,
             "row_policy": metadata.get("row_policy"),
             "frame_count": frame_count,
-            "state_dim": OBSERVATION_STATE_DIM,
+            "state_dim": layout.state_dim,
             "action_dim": ACTION_DIM,
             "terminal_policy": {
                 "synchronized_state_count": metadata.get("synchronized_state_count"),
@@ -453,6 +521,9 @@ def export_doosan_processed_to_lerobot_v21(
             "timestamp_policy": metadata.get("lerobot_timestamp_policy"),
             "original_ros_timestamps_retained_in": "source processed frames.jsonl",
         }
+        if not layout.is_legacy_default:
+            provenance["model_state_profile"] = layout.to_metadata()
+
         _write_json(staging / "meta" / "export_provenance.json", provenance)
 
         if output.exists() or output.is_symlink():
@@ -476,12 +547,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("processed_episode")
     parser.add_argument("output")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--orientation-representation",
+        choices=[item.value for item in OrientationRepresentation],
+        default=OrientationRepresentation.ROTVEC_PRINCIPAL.value,
+        help="Model-facing absolute TCP orientation encoding.",
+    )
+    parser.add_argument(
+        "--state-mode",
+        choices=[item.value for item in StateMode],
+        default=StateMode.FULL.value,
+        help="Export full proprioception with final 6D wrench, or omit wrench.",
+    )
     args = parser.parse_args(argv)
     try:
         result = export_doosan_processed_to_lerobot_v21(
             args.processed_episode,
             args.output,
             overwrite=args.overwrite,
+            orientation_representation=args.orientation_representation,
+            state_mode=args.state_mode,
         )
     except (LeRobotExportError, RuntimeError, OSError, FileExistsError) as exc:
         print(f"FAILED: {exc}")

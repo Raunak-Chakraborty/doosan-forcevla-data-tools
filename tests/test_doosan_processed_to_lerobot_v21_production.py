@@ -4,7 +4,15 @@ import unittest
 
 from doosan_forcevla_data.convert.doosan_force_proprio_v1 import OBSERVATION_STATE_FIELDS
 from doosan_forcevla_data.convert.doosan_measured_action_v1 import ACTION_FIELDS
+from doosan_forcevla_data.convert.model_state_profile_v1 import (
+    StateMode,
+    model_state_layout,
+)
+from doosan_forcevla_data.convert.orientation_representation_v1 import (
+    OrientationRepresentation,
+)
 from doosan_forcevla_data.convert import doosan_processed_to_lerobot_v21 as module
+from doosan_forcevla_data.validate import validate_doosan_lerobot_v21 as validator_module
 
 
 class DoosanProcessedToLeRobotV21ProductionTests(unittest.TestCase):
@@ -101,6 +109,72 @@ class DoosanProcessedToLeRobotV21ProductionTests(unittest.TestCase):
         self.assertEqual(stats["mean"], [1.0, 3.0])
         self.assertEqual(stats["std"], [1.0, 1.0])
         self.assertEqual(stats["count"], [2])
+
+
+    def test_features_support_every_orientation_and_state_mode(self):
+        expected = {
+            (OrientationRepresentation.ROTVEC_PRINCIPAL, StateMode.NO_WRENCH): 19,
+            (OrientationRepresentation.ROTVEC_PRINCIPAL, StateMode.FULL): 25,
+            (OrientationRepresentation.ROTVEC_CONTINUOUS, StateMode.NO_WRENCH): 19,
+            (OrientationRepresentation.ROTVEC_CONTINUOUS, StateMode.FULL): 25,
+            (OrientationRepresentation.QUATERNION, StateMode.NO_WRENCH): 20,
+            (OrientationRepresentation.QUATERNION, StateMode.FULL): 26,
+            (OrientationRepresentation.ROTATION6D, StateMode.NO_WRENCH): 22,
+            (OrientationRepresentation.ROTATION6D, StateMode.FULL): 28,
+        }
+        for (representation, mode), width in expected.items():
+            with self.subTest(representation=representation, mode=mode):
+                layout = model_state_layout(representation, mode)
+                state_feature = module._features(layout)["observation.state"]
+                self.assertEqual(state_feature["shape"], [width])
+                self.assertEqual(state_feature["names"], list(layout.state_fields))
+
+    def test_dataset_rows_transform_only_model_facing_state(self):
+        processed = [
+            {
+                "frame_index": 0,
+                "reference_index": 0,
+                "action_target_reference_index": 1,
+                "lerobot_timestamp": 0.0,
+                "observation_state_25d": [
+                    0.1, 0.2, 0.3,
+                    0.2, -0.1, 0.4,
+                    1.0,
+                    *[0.01 * i for i in range(6)],
+                    *[0.02 * i for i in range(6)],
+                    1.0, 2.0, 3.0, 4.0, 5.0, 6.0,
+                ],
+                "action_7d": [0.1, 0.2, 0.3, 0.01, 0.02, 0.03, 1.0],
+            }
+        ]
+        layout = model_state_layout(
+            OrientationRepresentation.QUATERNION,
+            StateMode.NO_WRENCH,
+        )
+        rows = module._dataset_rows(processed, layout=layout)
+        self.assertEqual(len(rows[0]["observation.state"]), 20)
+        self.assertEqual(rows[0]["observation.state"][0:3], [0.1, 0.2, 0.3])
+        self.assertEqual(rows[0]["observation.state"][layout.gripper_index], 1.0)
+        self.assertEqual(rows[0]["action"], processed[0]["action_7d"])
+
+    def test_validator_profile_resolution_is_backward_compatible_and_explicit(self):
+        legacy = validator_module._layout_from_provenance({})
+        self.assertTrue(legacy.is_legacy_default)
+        explicit = model_state_layout(
+            OrientationRepresentation.ROTATION6D,
+            StateMode.FULL,
+        )
+        resolved = validator_module._layout_from_provenance(
+            {"model_state_profile": explicit.to_metadata()}
+        )
+        self.assertEqual(resolved, explicit)
+
+        tampered = explicit.to_metadata()
+        tampered["state_dim"] = 27
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            validator_module._layout_from_provenance(
+                {"model_state_profile": tampered}
+            )
 
     def test_export_provenance_pins_actual_frozen_dependency_commits(self):
         self.assertEqual(

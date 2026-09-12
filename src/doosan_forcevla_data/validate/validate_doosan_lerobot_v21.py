@@ -13,6 +13,14 @@ from doosan_forcevla_data.convert.doosan_force_proprio_v1 import (
     OBSERVATION_STATE_FIELDS,
 )
 from doosan_forcevla_data.convert.doosan_measured_action_v1 import ACTION_DIM, ACTION_FIELDS
+from doosan_forcevla_data.convert.model_state_profile_v1 import (
+    ModelStateLayout,
+    ModelStateProfileError,
+    model_state_layout,
+)
+from doosan_forcevla_data.convert.orientation_representation_v1 import (
+    OrientationRepresentationError,
+)
 from doosan_forcevla_data.convert.doosan_processed_episode_v1 import (
     CAMERA_SPECS,
     EXTERNAL_CAMERA_KEY,
@@ -64,6 +72,27 @@ def _import_pyarrow_parquet() -> Any:
     return pq
 
 
+
+
+def _layout_from_provenance(provenance: dict[str, Any]) -> ModelStateLayout:
+    profile = provenance.get("model_state_profile")
+    if profile is None:
+        # Backward-compatible Patch-8/legacy Patch-11B default: absence of an
+        # explicit profile means full 25D principal-rotvec state.
+        return model_state_layout()
+    if not isinstance(profile, dict):
+        raise ValueError("model_state_profile must be an object")
+    try:
+        layout = model_state_layout(
+            profile.get("orientation_representation"),
+            profile.get("state_mode"),
+        )
+    except (ModelStateProfileError, OrientationRepresentationError) as exc:
+        raise ValueError(f"invalid model_state_profile: {exc}") from exc
+    if profile != layout.to_metadata():
+        raise ValueError("model_state_profile metadata does not match its declared layout")
+    return layout
+
 def validate_doosan_lerobot_v21(path: str | Path) -> LeRobotValidationResult:
     root = Path(path)
     errors: list[str] = []
@@ -75,6 +104,17 @@ def validate_doosan_lerobot_v21(path: str | Path) -> LeRobotValidationResult:
         episodes_stats = _read_jsonl(root / "meta" / "episodes_stats.jsonl")
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         return LeRobotValidationResult(False, (str(exc),), 0)
+
+    try:
+        layout = _layout_from_provenance(provenance)
+    except ValueError as exc:
+        errors.append(str(exc))
+        layout = model_state_layout()
+
+    if provenance.get("state_dim") != layout.state_dim:
+        errors.append("export provenance state_dim mismatch")
+    if provenance.get("action_dim") != ACTION_DIM:
+        errors.append("export provenance action_dim mismatch")
 
     if info.get("codebase_version") != LEROBOT_CODEBASE_VERSION:
         errors.append("codebase_version must be v2.1")
@@ -113,8 +153,8 @@ def validate_doosan_lerobot_v21(path: str | Path) -> LeRobotValidationResult:
     else:
         if features["observation.state"] != {
             "dtype": "float64",
-            "shape": [OBSERVATION_STATE_DIM],
-            "names": list(OBSERVATION_STATE_FIELDS),
+            "shape": [layout.state_dim],
+            "names": list(layout.state_fields),
         }:
             errors.append("observation.state feature contract mismatch")
         if features["action"] != {
@@ -192,8 +232,14 @@ def validate_doosan_lerobot_v21(path: str | Path) -> LeRobotValidationResult:
                 for index, row in enumerate(rows):
                     state = row.get("observation.state")
                     action = row.get("action")
-                    if not isinstance(state, list) or len(state) != OBSERVATION_STATE_DIM or not all(math.isfinite(float(x)) for x in state):
-                        errors.append(f"Parquet row {index}: invalid 25D state")
+                    if (
+                        not isinstance(state, list)
+                        or len(state) != layout.state_dim
+                        or not all(math.isfinite(float(x)) for x in state)
+                    ):
+                        errors.append(
+                            f"Parquet row {index}: invalid {layout.state_dim}D state"
+                        )
                         break
                     if not isinstance(action, list) or len(action) != ACTION_DIM or not all(math.isfinite(float(x)) for x in action):
                         errors.append(f"Parquet row {index}: invalid 7D action")

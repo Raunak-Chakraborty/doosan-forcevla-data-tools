@@ -264,3 +264,42 @@ rows at the next complete reference that has an adjacent complete successor.
 No action or video row bridges a dropped-reference gap. Metadata records
 `dropped_reference_indices` and `excluded_actionless_reference_indices`; the
 LeRobot timestamp remains regularized from contiguous training `frame_index`.
+
+## Patch 11B model-facing orientation profiles
+
+The processed-v1 artifact itself remains frozen at the validated 25D
+`observation_state_25d` principal-rotvec contract. Patch 11B adds an export-time
+model-state profile layer rather than creating multiple processed schemas.
+
+Production LeRobot export now supports:
+
+```text
+--orientation-representation rotvec_principal|rotvec_continuous|quaternion|rotation6d
+--state-mode full|no_wrench
+```
+
+The default remains `rotvec_principal` with `full`, producing the same 25D state
+values as before. Alternative model-facing layouts are derived only from the
+canonical stored orientation and do not resynchronize data or modify actions.
+
+The channel order is always:
+
+```text
+tcp_position(3)
+orientation(3|4|6)
+gripper(1)
+joint_position(6)
+joint_velocity(6)
+[wrench(6), only for full and always final]
+```
+
+Dimensions are therefore 19/25 for either rotvec representation, 20/26 for
+quaternion, and 22/28 for rotation6d. The measured action remains 7D with the
+same three-dimensional spatial relative rotvec rotation action.
+
+Non-default exports record an exact `model_state_profile` in
+`meta/export_provenance.json`. The LeRobot feature declaration and Parquet
+validator derive the state width and names from that profile rather than from a
+hard-coded 25D assumption. Absence of `model_state_profile` is intentionally
+interpreted as the historical full-25D principal-rotvec export for backward
+compatibility.

@@ -119,8 +119,7 @@ class PostConversionPopulationAuditV1Tests(unittest.TestCase):
                 "target_lerobot_commit": "def",
                 "target_dlimp_commit": "ghi",
             }
-            if not spec.layout.is_legacy_default:
-                provenance["model_state_profile"] = spec.layout.to_metadata()
+            provenance["model_state_profile"] = spec.layout.to_metadata()
             (dataset / "meta" / "export_provenance.json").write_text(
                 json.dumps(provenance)
             )
@@ -144,6 +143,32 @@ class PostConversionPopulationAuditV1Tests(unittest.TestCase):
             self.assertEqual(report["successful_bundle_count"], 1)
             self.assertEqual(report["total_rows_per_profile"], 2)
             self.assertLessEqual(report["max_orientation_matrix_abs_error"], 1e-9)
+
+    @mock.patch.object(
+        audit,
+        "validate_doosan_lerobot_v21",
+        return_value=LeRobotValidationResult(True, (), 2),
+    )
+    def test_missing_principal_full_profile_provenance_fails_bundle(self, _validator):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bundle = self._make_bundle(Path(tmpdir))
+            provenance_path = (
+                bundle
+                / "rotvec_principal__full"
+                / "meta"
+                / "export_provenance.json"
+            )
+            provenance = json.loads(provenance_path.read_text())
+            provenance.pop("model_state_profile")
+            provenance_path.write_text(json.dumps(provenance))
+
+            report = audit.audit_post_conversion_population(bundle)
+            self.assertEqual(report["audit_gate"], "FAIL")
+            self.assertEqual(report["failed_bundle_count"], 1)
+            self.assertIn(
+                "model_state_profile provenance does not match",
+                report["failures"][0]["error"],
+            )
 
     @mock.patch.object(
         audit,

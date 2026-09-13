@@ -14,7 +14,10 @@ The audit checks each individual export with the production validator and then
 independently verifies cross-profile equivalence: exact 7D actions, timestamps
 and indices, exact non-orientation state channels, exact wrench channels for all
 full profiles, the same physical orientation after decoding, matching tasks and
-stable provenance, and byte-identical physical camera videos.
+stable provenance, and byte-identical physical camera videos. Every profile,
+including the historical `rotvec_principal/full` default, must declare an exact
+`model_state_profile` object in `meta/export_provenance.json`; missing profile
+metadata is a blocking audit failure.
 
 For one bundle:
 

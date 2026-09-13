@@ -521,8 +521,7 @@ def export_doosan_processed_to_lerobot_v21(
             "timestamp_policy": metadata.get("lerobot_timestamp_policy"),
             "original_ros_timestamps_retained_in": "source processed frames.jsonl",
         }
-        if not layout.is_legacy_default:
-            provenance["model_state_profile"] = layout.to_metadata()
+        provenance["model_state_profile"] = layout.to_metadata()
 
         _write_json(staging / "meta" / "export_provenance.json", provenance)
 

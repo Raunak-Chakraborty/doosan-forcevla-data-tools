@@ -173,8 +173,6 @@ def _profile_metadata_matches(
     spec: ProfileSpec,
 ) -> bool:
     declared = provenance.get("model_state_profile")
-    if spec.layout.is_legacy_default:
-        return declared is None or declared == spec.layout.to_metadata()
     return declared == spec.layout.to_metadata()
 
 

@@ -1,1 +1,1 @@
-"""Read-only population audits that gate raw episodes before conversion."""
+"""Read-only population audits before and after Doosan dataset conversion."""

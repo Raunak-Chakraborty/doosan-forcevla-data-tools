@@ -313,3 +313,17 @@ PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_real_lerobot_ex
 PYTHONPATH=src python3 -m doosan_forcevla_data.convert.write_lerobot_skeleton --staged data/staged_dummy/doosan_full_25d/episode_000000 --output data/lerobot_dummy/doosan_full_25d/doosan_peg_in_hole_v0 --episode-index 0 --task-index 0 --profile doosan_full_25d --image-mode copy --overwrite
 PYTHONPATH=src python3 -m doosan_forcevla_data.validate.validate_lerobot_skeleton data/lerobot_dummy/doosan_full_25d/doosan_peg_in_hole_v0
 ```
+
+## Pre-conversion population audit
+
+Before converting new real episodes, run the read-only CPU-parallel population
+audit described in `docs/pre_conversion_population_audit_v1.md`:
+
+```bash
+./scripts/run_pre_conversion_audit.sh DATASET_ROOT OUTPUT_DIR --workers auto
+```
+
+`auto` uses up to four available physical CPU cores (CPU-affinity aware on Linux); pass an explicit `--workers N` only after validating higher MCAP I/O concurrency.
+The audit combines orientation-profile invariants, joint-wrap detection,
+gripper/RIGHT release semantics, and force/contact review screening.  It does
+not modify or discard episodes.
